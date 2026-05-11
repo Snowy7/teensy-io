@@ -7,6 +7,7 @@
 namespace teensyio {
 
 CounterSlot g_counters[kMaxCounters];
+EncoderSlot g_encoders[kMaxEncoders];
 
 using IsrPtr = void (*)();
 
@@ -30,19 +31,6 @@ static int edge_to_interrupt_mode(EdgeMode edge) {
   return RISING;
 }
 
-static void counter_tick(uint8_t id) {
-  if (id >= kMaxCounters || !g_counters[id].active) {
-    return;
-  }
-  const uint32_t now = micros();
-  const uint32_t previous = g_counters[id].last_edge_us;
-  g_counters[id].count++;
-  if (previous != 0) {
-    g_counters[id].period_us = now - previous;
-  }
-  g_counters[id].last_edge_us = now;
-}
-
 static uint8_t encoder_state(uint8_t pin_a, uint8_t pin_b) {
   return static_cast<uint8_t>((digitalRead(pin_a) == HIGH ? 2 : 0) | (digitalRead(pin_b) == HIGH ? 1 : 0));
 }
@@ -57,6 +45,29 @@ static int8_t encoder_delta(uint8_t previous, uint8_t current) {
   return table[((previous & 0x03) << 2) | (current & 0x03)];
 }
 
+static void counter_tick(uint8_t id) {
+  if (id >= kMaxCounters || !g_counters[id].active) {
+    return;
+  }
+  const uint32_t now = micros();
+  const uint32_t previous = g_counters[id].last_edge_us;
+  g_counters[id].count++;
+  if (previous != 0) {
+    g_counters[id].period_us = now - previous;
+  }
+  g_counters[id].last_edge_us = now;
+}
+
+static void encoder_tick(uint8_t id) {
+  if (id >= kMaxEncoders || !g_encoders[id].active) {
+    return;
+  }
+  const uint8_t current = encoder_state(g_encoders[id].pin_a, g_encoders[id].pin_b);
+  const int8_t delta = encoder_delta(g_encoders[id].last_state, current);
+  g_encoders[id].position += delta;
+  g_encoders[id].last_state = current;
+}
+
 void counter_isr_0() { counter_tick(0); }
 void counter_isr_1() { counter_tick(1); }
 void counter_isr_2() { counter_tick(2); }
@@ -65,6 +76,21 @@ void counter_isr_4() { counter_tick(4); }
 void counter_isr_5() { counter_tick(5); }
 void counter_isr_6() { counter_tick(6); }
 void counter_isr_7() { counter_tick(7); }
+
+void encoder_isr_0() { encoder_tick(0); }
+void encoder_isr_1() { encoder_tick(1); }
+void encoder_isr_2() { encoder_tick(2); }
+void encoder_isr_3() { encoder_tick(3); }
+
+static IsrPtr encoder_isr_for(uint8_t id) {
+  static IsrPtr isrs[kMaxEncoders] = {
+      encoder_isr_0,
+      encoder_isr_1,
+      encoder_isr_2,
+      encoder_isr_3,
+  };
+  return id < kMaxEncoders ? isrs[id] : nullptr;
+}
 
 void CommandHandler::handle(const Packet& packet) {
   if (packet.type != PacketType::Command || packet.length == 0) {
@@ -102,7 +128,6 @@ void CommandHandler::update() {
   if (allowed_before && !safety_.outputs_allowed()) {
     apply_safe_outputs();
   }
-  update_encoders();
   update_subscriptions();
 }
 
@@ -181,7 +206,11 @@ void CommandHandler::handle_system(CommandId command, const Packet& packet) {
       memset(analog_configured_, 0, sizeof(analog_configured_));
       memset(analog_samples_, 0, sizeof(analog_samples_));
       for (uint8_t i = 0; i < kMaxEncoders; ++i) {
-        encoders_[i] = EncoderSlot{};
+        if (g_encoders[i].active) {
+          detachInterrupt(digitalPinToInterrupt(g_encoders[i].pin_a));
+          detachInterrupt(digitalPinToInterrupt(g_encoders[i].pin_b));
+        }
+        g_encoders[i] = EncoderSlot{};
       }
       for (uint8_t i = 0; i < kMaxSubscriptions; ++i) {
         subscriptions_[i] = SubscriptionSlot{};
@@ -417,12 +446,18 @@ bool CommandHandler::configure_encoder(uint8_t id, uint8_t pin_a, uint8_t pin_b,
   }
   pinMode(pin_a, INPUT);
   pinMode(pin_b, INPUT);
-  encoders_[id] = EncoderSlot{};
-  encoders_[id].active = true;
-  encoders_[id].pin_a = pin_a;
-  encoders_[id].pin_b = pin_b;
-  encoders_[id].mode = mode;
-  encoders_[id].last_state = encoder_state(pin_a, pin_b);
+  if (g_encoders[id].active) {
+    detachInterrupt(digitalPinToInterrupt(g_encoders[id].pin_a));
+    detachInterrupt(digitalPinToInterrupt(g_encoders[id].pin_b));
+  }
+  g_encoders[id] = EncoderSlot{};
+  g_encoders[id].active = true;
+  g_encoders[id].pin_a = pin_a;
+  g_encoders[id].pin_b = pin_b;
+  g_encoders[id].mode = mode;
+  g_encoders[id].last_state = encoder_state(pin_a, pin_b);
+  attachInterrupt(digitalPinToInterrupt(pin_a), encoder_isr_for(id), CHANGE);
+  attachInterrupt(digitalPinToInterrupt(pin_b), encoder_isr_for(id), CHANGE);
   return true;
 }
 
@@ -515,22 +550,27 @@ void CommandHandler::handle_encoder(CommandId command, const Packet& packet) {
       break;
     }
     case CommandId::EncoderRead: {
-      if (packet.length < 2 || packet.payload[1] >= kMaxEncoders || !encoders_[packet.payload[1]].active) {
+      if (packet.length < 2 || packet.payload[1] >= kMaxEncoders || !g_encoders[packet.payload[1]].active) {
         nack(packet.seq, ErrorCode::InvalidPayload);
         return;
       }
       const uint8_t id = packet.payload[1];
+      noInterrupts();
+      const int32_t position = g_encoders[id].position;
+      interrupts();
       uint8_t payload[4] = {0};
-      write_i32(payload, encoders_[id].position);
+      write_i32(payload, position);
       data(packet.seq, payload, sizeof(payload));
       break;
     }
     case CommandId::EncoderReset: {
-      if (packet.length < 2 || packet.payload[1] >= kMaxEncoders || !encoders_[packet.payload[1]].active) {
+      if (packet.length < 2 || packet.payload[1] >= kMaxEncoders || !g_encoders[packet.payload[1]].active) {
         nack(packet.seq, ErrorCode::InvalidPayload);
         return;
       }
-      encoders_[packet.payload[1]].position = 0;
+      noInterrupts();
+      g_encoders[packet.payload[1]].position = 0;
+      interrupts();
       ack(packet.seq);
       break;
     }
@@ -627,26 +667,19 @@ int32_t CommandHandler::read_resource_value(ResourceKind kind, uint8_t id, bool&
         return count;
       }
     case ResourceKind::Encoder:
-      if (id >= kMaxEncoders || !encoders_[id].active) {
+      if (id >= kMaxEncoders || !g_encoders[id].active) {
         ok = false;
         return 0;
       }
-      return encoders_[id].position;
+      noInterrupts();
+      {
+        const int32_t position = g_encoders[id].position;
+        interrupts();
+        return position;
+      }
   }
   ok = false;
   return 0;
-}
-
-void CommandHandler::update_encoders() {
-  for (uint8_t i = 0; i < kMaxEncoders; ++i) {
-    if (!encoders_[i].active) {
-      continue;
-    }
-    const uint8_t current = encoder_state(encoders_[i].pin_a, encoders_[i].pin_b);
-    const int8_t delta = encoder_delta(encoders_[i].last_state, current);
-    encoders_[i].position += delta;
-    encoders_[i].last_state = current;
-  }
 }
 
 void CommandHandler::update_subscriptions() {

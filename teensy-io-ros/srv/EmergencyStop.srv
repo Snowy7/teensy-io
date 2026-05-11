@@ -1,0 +1,4 @@
+bool active
+---
+bool ok
+string error

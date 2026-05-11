@@ -18,8 +18,6 @@ dev = [
   "pytest>=8.0",
 ]
 
-[project.scripts]
-teensy-io-bridge = "teensy_io.ros.bridge_node:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

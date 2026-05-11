@@ -1,0 +1,6 @@
+string name
+float64 rate_hz
+bool on_change
+---
+bool ok
+string error

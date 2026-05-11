@@ -21,6 +21,7 @@ Application-specific meaning, such as wheel speed, motor throttle, brakes, or st
 ```txt
 teensy-io-firmware/  # Teensy firmware
 teensy-io-python/    # Python client library
+teensy-io-ros/       # ROS2 bridge and typed interfaces
 ```
 
 ## Current v1 scope
@@ -41,7 +42,7 @@ This scaffold implements the first reliable slice:
 - Pulse counter configure/read/reset/frequency
 - Quadrature encoder configure/read/reset
 - Telemetry and edge event subscription frames
-- Optional Jetson ROS2 bridge
+- Jetson ROS2 bridge with typed messages/services
 - Python batching API
 - YAML config loader
 
@@ -80,30 +81,30 @@ The Python client stores queued packets in a thread-safe byte-counted queue and 
 
 ## Jetson ROS2 bridge
 
-The bridge is optional and expects ROS2 Python packages to be installed on the Jetson:
+The production ROS2 bridge lives in the separate `teensy-io-ros/` package and uses dedicated `.msg` and `.srv` interfaces instead of JSON strings.
 
 ```bash
-teensy-io-bridge --ros-args \
-  -p port:=/dev/ttyACM0 \
-  -p baudrate:=1000000 \
-  -p config:=/path/to/io.yaml
+colcon build --packages-select teensy_io_ros
+source install/setup.bash
+ros2 launch teensy_io_ros bridge.launch.py
 ```
 
-It publishes JSON on:
+It publishes typed messages on:
 
 - `teensy_io/telemetry`
 - `teensy_io/events`
 - `teensy_io/status`
 
-It accepts JSON commands on:
+It exposes typed services including:
 
-- `teensy_io/commands`
-
-Example command payload:
-
-```json
-{"op":"pwm_write","name":"motor_pwm","duty":0.25}
-```
+- `teensy_io/digital_read`
+- `teensy_io/digital_write`
+- `teensy_io/pwm_write`
+- `teensy_io/counter_read`
+- `teensy_io/analog_read`
+- `teensy_io/encoder_read`
+- `teensy_io/subscribe`
+- `teensy_io/emergency_stop`
 
 A systemd template for Jetson deployment is in:
 
@@ -112,6 +113,9 @@ deployment/systemd/teensy-io-bridge.service
 ```
 
 Daemon/Unix socket IPC is intentionally deferred; see [FUTURE.md](FUTURE.md).
+Safety and full YAML configuration are documented in [docs/SAFETY_AND_CONFIG.md](docs/SAFETY_AND_CONFIG.md).
+
+Production hardening currently includes interrupt-based pulse counters, interrupt-based quadrature encoder counting, host-side rolling-window counter frequency, bounded host telemetry/event queues with drop counters, config validation, and coalesced high-rate batch writes.
 
 ## Firmware build
 

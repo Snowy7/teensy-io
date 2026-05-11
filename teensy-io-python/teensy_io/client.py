@@ -44,6 +44,8 @@ class TeensyIO:
         flush_rate_hz: float | None = None,
         queue_max_bytes: int | None = None,
         flush_chunk_size: int = 65536,
+        telemetry_max_frames: int = 4096,
+        event_max_frames: int = 4096,
     ) -> None:
         if transport is None and port is None:
             raise ValueError("port or transport is required")
@@ -67,8 +69,10 @@ class TeensyIO:
         self._counter_ids: dict[str, int] = {}
         self._encoder_ids: dict[str, int] = {}
         self._config: dict[str, Any] = {}
-        self._telemetry_queue: "queue.Queue[TelemetryFrame]" = queue.Queue()
-        self._event_queue: "queue.Queue[EdgeEvent]" = queue.Queue()
+        self._telemetry_queue: "queue.Queue[TelemetryFrame]" = queue.Queue(maxsize=telemetry_max_frames)
+        self._event_queue: "queue.Queue[EdgeEvent]" = queue.Queue(maxsize=event_max_frames)
+        self.telemetry_dropped = 0
+        self.events_dropped = 0
         self._telemetry_callbacks: list[Callable[[TelemetryFrame], None]] = []
         self._edge_callbacks: dict[tuple[ResourceKind, int], list[Callable[[EdgeEvent], None]]] = {}
         self._heartbeat_thread: threading.Thread | None = None
@@ -340,7 +344,7 @@ class TeensyIO:
                 packet.payload[1],
                 self._unpack_i32(packet.payload[2:6]),
             )
-            self._telemetry_queue.put(frame)
+            self._put_bounded(self._telemetry_queue, frame, "telemetry")
             for callback in list(self._telemetry_callbacks):
                 callback(frame)
         elif packet.type == PacketType.EVENT and len(packet.payload) >= 10:
@@ -354,9 +358,24 @@ class TeensyIO:
                 self._unpack_i32(packet.payload[2:6]),
                 self._unpack_u32(packet.payload[6:10]),
             )
-            self._event_queue.put(event)
+            self._put_bounded(self._event_queue, event, "event")
             for callback in list(self._edge_callbacks.get((event.kind, event.resource_id), [])):
                 callback(event)
+
+    def _put_bounded(self, target: queue.Queue[Any], item: Any, kind: str) -> None:
+        try:
+            target.put_nowait(item)
+            return
+        except queue.Full:
+            try:
+                target.get_nowait()
+            except queue.Empty:
+                pass
+            if kind == "telemetry":
+                self.telemetry_dropped += 1
+            else:
+                self.events_dropped += 1
+            target.put_nowait(item)
 
     def _raise_for_error(self, code: ErrorCode) -> None:
         if code == ErrorCode.INVALID_PIN:

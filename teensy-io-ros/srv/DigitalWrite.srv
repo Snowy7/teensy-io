@@ -1,0 +1,5 @@
+string name
+bool value
+---
+bool ok
+string error

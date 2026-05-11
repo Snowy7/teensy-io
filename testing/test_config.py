@@ -18,6 +18,22 @@ def test_load_config_rejects_non_mapping_root(tmp_path) -> None:
         load_config(path)
 
 
+def test_load_config_rejects_invalid_pin_type(tmp_path) -> None:
+    path = tmp_path / "bad.yaml"
+    path.write_text(
+        """
+        pins:
+          bad:
+            type: motor
+            physical_pin: 1
+        """,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
 def test_from_config_and_configure_all(tmp_path) -> None:
     path = tmp_path / "io.yaml"
     path.write_text(

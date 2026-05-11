@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from collections import deque
 from typing import Any
 
 from teensy_io.protocol.commands import CommandId
@@ -11,6 +13,7 @@ class PulseCounter:
         self.name = name
         self.id: int | None = None
         self._last_count = 0
+        self._samples: deque[tuple[float, int]] = deque()
 
     def attach(self, pin: str | int, edge: str = "rising") -> "PulseCounter":
         physical_pin = self._resolve_pin(pin)
@@ -30,15 +33,30 @@ class PulseCounter:
         return delta
 
     def frequency(self, window_ms: int = 100) -> float:
-        del window_ms  # Firmware currently reports the latest edge period.
         self._require_counter()
-        milli_hz = self.io._unpack_u32(self.io._command(CommandId.COUNTER_FREQUENCY, bytes([self.id])))
-        return milli_hz / 1000.0
+        if window_ms <= 0:
+            milli_hz = self.io._unpack_u32(self.io._command(CommandId.COUNTER_FREQUENCY, bytes([self.id])))
+            return milli_hz / 1000.0
+
+        now = time.monotonic()
+        count = self.read()
+        self._samples.append((now, count))
+        cutoff = now - (window_ms / 1000.0)
+        while len(self._samples) > 2 and self._samples[0][0] < cutoff:
+            self._samples.popleft()
+        if len(self._samples) < 2:
+            return 0.0
+        start_time, start_count = self._samples[0]
+        elapsed = now - start_time
+        if elapsed <= 0:
+            return 0.0
+        return (count - start_count) / elapsed
 
     def reset(self) -> None:
         self._require_counter()
         self.io._command(CommandId.COUNTER_RESET, bytes([self.id]))
         self._last_count = 0
+        self._samples.clear()
 
     def _resolve_pin(self, pin: str | int) -> int:
         if isinstance(pin, int):

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .schema import validate_config
+
 
 def load_config(path: str | Path) -> dict[str, Any]:
     try:
@@ -14,4 +16,5 @@ def load_config(path: str | Path) -> dict[str, Any]:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
         raise ValueError("config root must be a mapping")
+    validate_config(data)
     return data

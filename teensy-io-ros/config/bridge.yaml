@@ -1,0 +1,6 @@
+teensy_io_bridge:
+  ros__parameters:
+    port: /dev/ttyACM0
+    baudrate: 1000000
+    config: /etc/teensy-io/io.yaml
+    heartbeat_hz: 20.0

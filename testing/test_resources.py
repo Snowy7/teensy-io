@@ -94,7 +94,7 @@ def test_unconfigured_pwm_write_disable_raise_runtime_error() -> None:
         io.pwm("out").disable()
 
 
-def test_counter_attach_read_delta_frequency_and_reset() -> None:
+def test_counter_attach_read_delta_firmware_frequency_and_reset() -> None:
     counts = iter([10, 17, 25])
 
     def handler(request):
@@ -113,7 +113,7 @@ def test_counter_attach_read_delta_frequency_and_reset() -> None:
     assert counter.read() == 10
     assert counter.delta() == 17
     assert counter.delta() == 8
-    assert counter.frequency(window_ms=100) == 12.5
+    assert counter.frequency(window_ms=0) == 12.5
     counter.reset()
 
     assert [(request.payload[0], command_payload(request)) for request in transport.requests] == [
@@ -125,6 +125,26 @@ def test_counter_attach_read_delta_frequency_and_reset() -> None:
         (CommandId.COUNTER_FREQUENCY, b"\x00"),
         (CommandId.COUNTER_RESET, b"\x00"),
     ]
+
+
+def test_counter_frequency_uses_rolling_host_window(monkeypatch) -> None:
+    import itertools
+
+    counts = iter([100, 130])
+    times = itertools.chain([10.0, 10.0, 10.1, 10.1], itertools.repeat(10.2))
+
+    def handler(request):
+        command = CommandId(request.payload[0])
+        if command == CommandId.COUNTER_READ:
+            return Packet(PacketType.DATA, request.seq, next(counts).to_bytes(4, "little", signed=True))
+        return Packet(PacketType.ACK, request.seq, b"\x00")
+
+    monkeypatch.setattr("teensy_io.resources.counter.time.monotonic", lambda: next(times))
+    io = TeensyIO(transport=ScriptedTransport(handler)).connect()
+    counter = io.counter("ticks").attach(pin=7)
+
+    assert counter.frequency(window_ms=200) == 0.0
+    assert counter.frequency(window_ms=200) == pytest.approx(300.0)
 
 
 def test_counter_attach_accepts_physical_pin_directly() -> None:

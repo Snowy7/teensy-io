@@ -1,0 +1,7 @@
+builtin_interfaces/Time stamp
+bool connected
+bool emergency_stop_active
+uint32 telemetry_dropped
+uint32 events_dropped
+string firmware_version
+string message

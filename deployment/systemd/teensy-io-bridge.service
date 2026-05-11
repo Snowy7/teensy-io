@@ -7,7 +7,8 @@ Type=simple
 User=robot
 Group=dialout
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/local/bin/teensy-io-bridge --ros-args -p port:=/dev/ttyACM0 -p baudrate:=1000000 -p config:=/etc/teensy-io/io.yaml
+Environment=ROS_DOMAIN_ID=0
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source /home/robot/teensy-io-ws/install/setup.bash && ros2 launch teensy_io_ros bridge.launch.py'
 Restart=always
 RestartSec=1
 

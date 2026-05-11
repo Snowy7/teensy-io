@@ -1,0 +1,6 @@
+string name
+---
+bool ok
+uint16 raw
+float64 normalized
+string error

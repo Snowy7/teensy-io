@@ -55,7 +55,6 @@ class CommandHandler {
   bool configure_counter(uint8_t id, uint8_t pin, EdgeMode edge);
   bool configure_encoder(uint8_t id, uint8_t pin_a, uint8_t pin_b, uint8_t mode);
   int32_t read_resource_value(ResourceKind kind, uint8_t id, bool& ok);
-  void update_encoders();
   void update_subscriptions();
   void write_i32(uint8_t* payload, int32_t value);
   void write_u32(uint8_t* payload, uint32_t value);
@@ -65,10 +64,10 @@ class CommandHandler {
   bool pwm_configured_[NUM_DIGITAL_PINS] = {};
   bool analog_configured_[NUM_DIGITAL_PINS] = {};
   uint8_t analog_samples_[NUM_DIGITAL_PINS] = {};
-  EncoderSlot encoders_[kMaxEncoders] = {};
   SubscriptionSlot subscriptions_[kMaxSubscriptions] = {};
 };
 
 extern CounterSlot g_counters[kMaxCounters];
+extern EncoderSlot g_encoders[kMaxEncoders];
 
 }  // namespace teensyio

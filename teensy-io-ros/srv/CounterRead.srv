@@ -1,0 +1,6 @@
+string name
+---
+bool ok
+int32 count
+float64 frequency_hz
+string error

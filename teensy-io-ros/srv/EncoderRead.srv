@@ -1,0 +1,5 @@
+string name
+---
+bool ok
+int32 position
+string error
