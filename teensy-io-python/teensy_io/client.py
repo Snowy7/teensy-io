@@ -46,6 +46,8 @@ class TeensyIO:
         flush_rate_hz: float | None = None,
         queue_max_bytes: int | None = None,
         flush_chunk_size: int = 65536,
+        read_chunk_size: int = 4096,
+        read_drain_max_bytes: int = 262144,
         telemetry_max_frames: int = 4096,
         event_max_frames: int = 4096,
     ) -> None:
@@ -57,6 +59,8 @@ class TeensyIO:
         self.flush_rate_hz = flush_rate_hz
         self.queue_max_bytes = queue_max_bytes
         self.flush_chunk_size = flush_chunk_size
+        self.read_chunk_size = read_chunk_size
+        self.read_drain_max_bytes = read_drain_max_bytes
         self._decoder = PacketDecoder()
         self._seq = itertools.count(1)
         self._lock = threading.RLock()
@@ -97,12 +101,13 @@ class TeensyIO:
             return self._queued_bytes
 
     @classmethod
-    def from_config(cls, path: str | Path) -> "TeensyIO":
+    def from_config(cls, path: str | Path, **kwargs: Any) -> "TeensyIO":
         config = load_config(path)
         io = cls(
             config.get("port"),
             baudrate=int(config.get("baudrate", 1_000_000)),
             timeout=float(config.get("timeout", 1.0)),
+            **kwargs,
         )
         io._config = config
         return io
@@ -328,7 +333,7 @@ class TeensyIO:
     def _read_response(self, seq: int) -> Packet:
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
-            data = self.transport.read(64)
+            data = self._read_some(blocking=True)
             if not data:
                 continue
             for packet in self._decoder.feed(data):
@@ -337,16 +342,38 @@ class TeensyIO:
                 self._handle_async_packet(packet)
         raise TeensyIOTimeoutError(f"timeout waiting for response seq={seq}")
 
-    def _poll_async_packets(self, timeout: float = 0.0) -> None:
+    def _poll_async_packets(self, timeout: float = 0.0, max_bytes: int | None = None) -> int:
         deadline = time.monotonic() + timeout
+        drained = 0
+        budget = self.read_drain_max_bytes if max_bytes is None else max_bytes
         while True:
-            data = self.transport.read(64)
+            with self._transport_lock:
+                data = self.transport.read_available(min(self.read_chunk_size, max(1, budget - drained)))
             if data:
+                drained += len(data)
                 for packet in self._decoder.feed(data):
                     self._handle_async_packet(packet)
-                return
+                if drained >= budget:
+                    return drained
+                continue
             if timeout <= 0 or time.monotonic() >= deadline:
-                return
+                return drained
+            with self._transport_lock:
+                data = self._read_some(blocking=True, max_bytes=min(self.read_chunk_size, max(1, budget - drained)))
+            if data:
+                drained += len(data)
+                for packet in self._decoder.feed(data):
+                    self._handle_async_packet(packet)
+                if drained >= budget:
+                    return drained
+
+    def _read_some(self, *, blocking: bool, max_bytes: int | None = None) -> bytes:
+        limit = self.read_chunk_size if max_bytes is None else max_bytes
+        first = self.transport.read(1) if blocking else self.transport.read_available(limit)
+        if not first or len(first) >= limit:
+            return first
+        rest = self.transport.read_available(limit - len(first))
+        return first + rest
 
     def _queue_packet(self, encoded: bytes) -> None:
         with self._lock:

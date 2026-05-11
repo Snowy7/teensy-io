@@ -41,7 +41,13 @@ class FakeTransport(Transport):
         if not self.responses:
             return b""
         data = self.responses.popleft()
-        return data[:size] if size < len(data) else data
+        if size < len(data):
+            self.responses.appendleft(data[size:])
+            return data[:size]
+        return data
+
+    def read_available(self, max_bytes: int) -> bytes:
+        return self.read(max_bytes)
 
     @property
     def is_open(self) -> bool:

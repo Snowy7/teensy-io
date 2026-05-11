@@ -20,6 +20,9 @@ class Transport(ABC):
     def read(self, size: int = 1) -> bytes:
         raise NotImplementedError
 
+    def read_available(self, max_bytes: int) -> bytes:
+        return b""
+
     @property
     @abstractmethod
     def is_open(self) -> bool:

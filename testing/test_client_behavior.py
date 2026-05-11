@@ -14,7 +14,7 @@ from teensy_io import (
     TeensyIO,
     TeensyIOTimeoutError,
 )
-from teensy_io.protocol.commands import CommandId, ErrorCode, PacketType
+from teensy_io.protocol.commands import CommandId, ErrorCode, PacketType, ResourceKind
 from teensy_io.protocol.errors import ProtocolError
 from teensy_io.protocol.packet import Packet
 from testing.fakes import ScriptedTransport, command_payload
@@ -164,6 +164,25 @@ def test_large_batch_can_flush_in_one_write_when_chunk_is_large_enough() -> None
 
     assert len(transport.requests) == 1000
     assert len(transport.writes) == 1
+
+
+def test_async_poll_drains_many_packets_in_one_call() -> None:
+    transport = ScriptedTransport()
+    io = TeensyIO(transport=transport, read_chunk_size=4096).connect()
+    count = 250
+    for index in range(count):
+        transport.queue(
+            Packet(
+                PacketType.TELEMETRY,
+                0,
+                bytes([ResourceKind.COUNTER, 2]) + index.to_bytes(4, "little", signed=True),
+            )
+        )
+
+    drained = io._poll_async_packets(timeout=0.0)
+
+    assert drained > 64
+    assert io._telemetry_queue.qsize() == count
 
 
 def test_queue_max_bytes_applies_backpressure_before_memory_growth() -> None:

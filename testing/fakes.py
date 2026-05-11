@@ -44,6 +44,9 @@ class ScriptedTransport(Transport):
         del self._rx[:limit]
         return data
 
+    def read_available(self, max_bytes: int) -> bytes:
+        return self.read(max_bytes)
+
     @property
     def is_open(self) -> bool:
         return self.opened

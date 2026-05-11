@@ -9,6 +9,7 @@ static constexpr uint32_t kDefaultWatchdogTimeoutMs = 300;
 static constexpr uint8_t kMaxCounters = 8;
 static constexpr uint8_t kMaxEncoders = 4;
 static constexpr uint8_t kMaxSubscriptions = 16;
+static constexpr uint8_t kAsyncOutboundFrames = 64;
 static constexpr uint8_t kMaxI2cBuses = 3;
 static constexpr uint8_t kMaxDacs = 8;
 static constexpr uint16_t kAdcMaxValue = 4095;

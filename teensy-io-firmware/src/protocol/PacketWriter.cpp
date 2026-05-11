@@ -6,6 +6,14 @@ void PacketWriter::write(const Packet& packet) {
   write(packet.type, packet.seq, packet.payload, packet.length);
 }
 
+int PacketWriter::available_for_write() const {
+  return stream_.availableForWrite();
+}
+
+uint16_t PacketWriter::encoded_size(uint16_t payload_length) {
+  return static_cast<uint16_t>(1 + 6 + payload_length + 2);
+}
+
 void PacketWriter::write(PacketType type, uint16_t seq, const uint8_t* payload, uint16_t length) {
   uint8_t header[6] = {
       kProtocolVersion,

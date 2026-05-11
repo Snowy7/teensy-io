@@ -52,7 +52,8 @@ class TeensyIORosBridge:
         self._service(Subscribe, "teensy_io/subscribe", self._subscribe)
         self._service(EmergencyStop, "teensy_io/emergency_stop", self._emergency_stop)
 
-        self.poll_timer = node.create_timer(0.005, self._poll)
+        self.max_publish_per_poll = 1000
+        self.poll_timer = node.create_timer(0.001, self._poll)
         self.status_timer = node.create_timer(1.0, self.publish_status)
 
     def configure_names(self) -> None:
@@ -191,7 +192,10 @@ class TeensyIORosBridge:
 
     def _poll(self) -> None:
         self.io._poll_async_packets(timeout=0.0)
+        published = 0
         while True:
+            if published >= self.max_publish_per_poll:
+                break
             try:
                 frame = self.io._telemetry_queue.get_nowait()
             except Exception:
@@ -204,7 +208,11 @@ class TeensyIORosBridge:
             msg.value = frame.value
             msg.value_float = float(frame.value)
             self.telemetry_pub.publish(msg)
+            published += 1
+        published = 0
         while True:
+            if published >= self.max_publish_per_poll:
+                break
             try:
                 event = self.io._event_queue.get_nowait()
             except Exception:
@@ -217,6 +225,7 @@ class TeensyIORosBridge:
             msg.value = event.value
             msg.firmware_timestamp_us = event.timestamp_us
             self.events_pub.publish(msg)
+            published += 1
 
 
 def main() -> None:
@@ -229,7 +238,8 @@ def main() -> None:
     config = node.declare_parameter("config", "").value
     heartbeat_hz = float(node.declare_parameter("heartbeat_hz", 20.0).value)
 
-    io = TeensyIO.from_config(config) if config else TeensyIO(port, baudrate=baudrate)
+    client_options = {"telemetry_max_frames": 32768, "event_max_frames": 32768}
+    io = TeensyIO.from_config(config, **client_options) if config else TeensyIO(port, baudrate=baudrate, **client_options)
     io.connect()
     if config:
         io.configure_all()

@@ -43,6 +43,14 @@ struct DacSlot {
   uint16_t last_value = 0;
 };
 
+struct OutboundFrame {
+  bool active = false;
+  PacketType type = PacketType::Telemetry;
+  uint16_t seq = 0;
+  uint16_t length = 0;
+  uint8_t payload[kMaxPayloadSize] = {};
+};
+
 class CommandHandler {
  public:
   explicit CommandHandler(PacketWriter& writer) : writer_(writer) {}
@@ -68,6 +76,8 @@ class CommandHandler {
   bool write_dac_raw(uint8_t id, uint8_t channel, uint16_t value);
   int32_t read_resource_value(ResourceKind kind, uint8_t id, bool& ok);
   void update_subscriptions();
+  bool queue_async(PacketType type, const uint8_t* payload, uint16_t length);
+  void flush_async(uint8_t max_frames);
   void write_i32(uint8_t* payload, int32_t value);
   void write_u32(uint8_t* payload, uint32_t value);
 
@@ -79,6 +89,11 @@ class CommandHandler {
   SubscriptionSlot subscriptions_[kMaxSubscriptions] = {};
   bool i2c_configured_[kMaxI2cBuses] = {};
   DacSlot dacs_[kMaxDacs] = {};
+  OutboundFrame outbound_[kAsyncOutboundFrames] = {};
+  uint8_t outbound_head_ = 0;
+  uint8_t outbound_tail_ = 0;
+  uint8_t outbound_count_ = 0;
+  uint32_t outbound_dropped_ = 0;
 };
 
 extern CounterSlot g_counters[kMaxCounters];

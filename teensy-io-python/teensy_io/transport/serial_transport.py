@@ -29,6 +29,14 @@ class SerialTransport(Transport):
             raise RuntimeError("transport is not open")
         return self._serial.read(size)
 
+    def read_available(self, max_bytes: int) -> bytes:
+        if self._serial is None:
+            raise RuntimeError("transport is not open")
+        waiting = int(getattr(self._serial, "in_waiting", 0) or 0)
+        if waiting <= 0:
+            return b""
+        return self._serial.read(min(max_bytes, waiting))
+
     @property
     def is_open(self) -> bool:
         return bool(self._serial and self._serial.is_open)

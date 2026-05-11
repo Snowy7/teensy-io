@@ -148,7 +148,9 @@ void CommandHandler::update() {
   if (allowed_before && !safety_.outputs_allowed()) {
     apply_safe_outputs();
   }
+  flush_async(8);
   update_subscriptions();
+  flush_async(8);
 }
 
 void CommandHandler::ack(uint16_t seq) {
@@ -177,6 +179,46 @@ void CommandHandler::write_u32(uint8_t* payload, uint32_t value) {
   payload[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
   payload[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
   payload[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+}
+
+bool CommandHandler::queue_async(PacketType type, const uint8_t* payload, uint16_t length) {
+  if (length > kMaxPayloadSize) {
+    return false;
+  }
+  if (outbound_count_ >= kAsyncOutboundFrames) {
+    outbound_[outbound_head_] = OutboundFrame{};
+    outbound_head_ = static_cast<uint8_t>((outbound_head_ + 1) % kAsyncOutboundFrames);
+    outbound_count_--;
+    outbound_dropped_++;
+  }
+  OutboundFrame& frame = outbound_[outbound_tail_];
+  frame.active = true;
+  frame.type = type;
+  frame.seq = 0;
+  frame.length = length;
+  if (length > 0 && payload != nullptr) {
+    memcpy(frame.payload, payload, length);
+  }
+  outbound_tail_ = static_cast<uint8_t>((outbound_tail_ + 1) % kAsyncOutboundFrames);
+  outbound_count_++;
+  return true;
+}
+
+void CommandHandler::flush_async(uint8_t max_frames) {
+  uint8_t written = 0;
+  while (outbound_count_ > 0 && written < max_frames) {
+    OutboundFrame& frame = outbound_[outbound_head_];
+    const uint16_t encoded_size = PacketWriter::encoded_size(frame.length);
+    const int available = writer_.available_for_write();
+    if (available < encoded_size) {
+      return;
+    }
+    writer_.write(frame.type, frame.seq, frame.payload, frame.length);
+    frame = OutboundFrame{};
+    outbound_head_ = static_cast<uint8_t>((outbound_head_ + 1) % kAsyncOutboundFrames);
+    outbound_count_--;
+    written++;
+  }
 }
 
 void CommandHandler::apply_safe_outputs() {
@@ -239,6 +281,13 @@ void CommandHandler::handle_system(CommandId command, const Packet& packet) {
       for (uint8_t i = 0; i < kMaxDacs; ++i) {
         dacs_[i] = DacSlot{};
       }
+      for (uint8_t i = 0; i < kAsyncOutboundFrames; ++i) {
+        outbound_[i] = OutboundFrame{};
+      }
+      outbound_head_ = 0;
+      outbound_tail_ = 0;
+      outbound_count_ = 0;
+      outbound_dropped_ = 0;
       ack(packet.seq);
       break;
     default:
@@ -919,7 +968,7 @@ void CommandHandler::update_subscriptions() {
         };
         write_i32(&payload[2], value);
         write_u32(&payload[6], micros());
-        writer_.write(PacketType::Event, 0, payload, sizeof(payload));
+        queue_async(PacketType::Event, payload, sizeof(payload));
       }
     }
     subscriptions_[i].last_value = value;
@@ -933,7 +982,7 @@ void CommandHandler::update_subscriptions() {
         subscriptions_[i].id,
     };
     write_i32(&payload[2], value);
-    writer_.write(PacketType::Telemetry, 0, payload, sizeof(payload));
+    queue_async(PacketType::Telemetry, payload, sizeof(payload));
     const uint32_t interval_ms = 1000UL / subscriptions_[i].rate_hz;
     subscriptions_[i].next_due_ms = now + (interval_ms == 0 ? 1 : interval_ms);
   }
