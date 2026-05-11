@@ -1,0 +1,27 @@
+port: /dev/ttyACM0
+baudrate: 1000000
+heartbeat_hz: 20
+watchdog_timeout_ms: 300
+
+pins:
+  status_led:
+    type: digital_output
+    physical_pin: 13
+    initial: false
+
+  motor_pwm:
+    type: pwm
+    physical_pin: 3
+    frequency: 20000
+    initial_duty: 0.0
+
+inputs:
+  wheel_pulse:
+    physical_pin: 7
+    pull: up
+    debounce_us: 50
+
+counters:
+  wheel_ticks:
+    input: wheel_pulse
+    edge: rising
