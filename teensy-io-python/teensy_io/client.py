@@ -60,6 +60,7 @@ class TeensyIO:
         self._decoder = PacketDecoder()
         self._seq = itertools.count(1)
         self._lock = threading.RLock()
+        self._transport_lock = threading.RLock()
         self._batch_depth = 0
         self._queued: deque[bytes] = deque()
         self._queued_bytes = 0
@@ -233,20 +234,21 @@ class TeensyIO:
             self._batch_depth += 1
 
     def flush(self) -> None:
-        while True:
-            with self._lock:
-                if not self._queued:
-                    return
-                chunk = bytearray()
-                while self._queued and len(chunk) + len(self._queued[0]) <= self.flush_chunk_size:
-                    item = self._queued.popleft()
-                    chunk.extend(item)
-                    self._queued_bytes -= len(item)
-                if not chunk and self._queued:
-                    item = self._queued.popleft()
-                    chunk.extend(item)
-                    self._queued_bytes -= len(item)
-            self.transport.write(bytes(chunk))
+        with self._transport_lock:
+            while True:
+                with self._lock:
+                    if not self._queued:
+                        return
+                    chunk = bytearray()
+                    while self._queued and len(chunk) + len(self._queued[0]) <= self.flush_chunk_size:
+                        item = self._queued.popleft()
+                        chunk.extend(item)
+                        self._queued_bytes -= len(item)
+                    if not chunk and self._queued:
+                        item = self._queued.popleft()
+                        chunk.extend(item)
+                        self._queued_bytes -= len(item)
+                self.transport.write(bytes(chunk))
 
     @contextmanager
     def batch(self) -> Iterator[None]:
@@ -309,10 +311,11 @@ class TeensyIO:
                 self.flush()
             return b""
 
-        self.transport.write(encoded)
-        if not expect_response:
-            return b""
-        response = self._read_response(seq)
+        with self._transport_lock:
+            self.transport.write(encoded)
+            if not expect_response:
+                return b""
+            response = self._read_response(seq)
         if response.type == PacketType.ACK:
             return b""
         if response.type == PacketType.DATA:

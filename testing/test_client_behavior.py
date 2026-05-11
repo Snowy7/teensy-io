@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -189,6 +190,40 @@ def test_auto_flush_thread_flushes_queued_fire_and_forget_command() -> None:
     io.close()
 
     assert len(transport.writes) == 1
+
+
+def test_foreground_commands_and_heartbeat_are_serialized() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def handler(request: Packet) -> Packet:
+        if request.payload[0] == CommandId.HEARTBEAT:
+            entered.set()
+            assert release.wait(timeout=1.0)
+        return Packet(PacketType.ACK, request.seq, b"\x00")
+
+    transport = ScriptedTransport(handler)
+    io = TeensyIO(transport=transport).connect()
+
+    heartbeat_thread = threading.Thread(target=io.heartbeat)
+    heartbeat_thread.start()
+    assert entered.wait(timeout=1.0)
+
+    foreground_done = threading.Event()
+    foreground_thread = threading.Thread(target=lambda: (io.clear_emergency_stop(), foreground_done.set()))
+    foreground_thread.start()
+    time.sleep(0.05)
+    assert not foreground_done.is_set()
+
+    release.set()
+    heartbeat_thread.join(timeout=1.0)
+    foreground_thread.join(timeout=1.0)
+
+    assert foreground_done.is_set()
+    assert [request.payload[0] for request in transport.requests] == [
+        CommandId.HEARTBEAT,
+        CommandId.CLEAR_EMERGENCY_STOP,
+    ]
 
 
 def test_counter_ids_are_stable_and_incremental() -> None:
