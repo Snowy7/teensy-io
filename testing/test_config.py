@@ -44,6 +44,11 @@ def test_from_config_and_configure_all(tmp_path) -> None:
               wheel_ticks:
                 input: wheel_pulse
                 edge: rising
+            encoders:
+              steering:
+                pin_a: 5
+                pin_b: 6
+                mode: x4
             """
         ),
         encoding="utf-8",
@@ -60,6 +65,7 @@ def test_from_config_and_configure_all(tmp_path) -> None:
         (CommandId.CONFIG_PWM, b"\x03\x20\x4e\x00\x00\x40"),
         (CommandId.CONFIG_DIGITAL_INPUT, b"\x07\x01"),
         (CommandId.CONFIG_COUNTER, b"\x00\x07\x00"),
+        (CommandId.CONFIG_ENCODER, b"\x00\x05\x06\x04"),
     ]
 
 

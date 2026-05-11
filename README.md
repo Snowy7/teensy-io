@@ -37,7 +37,11 @@ This scaffold implements the first reliable slice:
 - Digital output configure/write
 - Digital input configure/read
 - PWM configure/write/disable
+- Analog configure/read
 - Pulse counter configure/read/reset/frequency
+- Quadrature encoder configure/read/reset
+- Telemetry and edge event subscription frames
+- Optional Jetson ROS2 bridge
 - Python batching API
 - YAML config loader
 
@@ -54,6 +58,41 @@ io.pin("led").write(True)
 
 io.close()
 ```
+
+## Jetson ROS2 bridge
+
+The bridge is optional and expects ROS2 Python packages to be installed on the Jetson:
+
+```bash
+teensy-io-bridge --ros-args \
+  -p port:=/dev/ttyACM0 \
+  -p baudrate:=1000000 \
+  -p config:=/path/to/io.yaml
+```
+
+It publishes JSON on:
+
+- `teensy_io/telemetry`
+- `teensy_io/events`
+- `teensy_io/status`
+
+It accepts JSON commands on:
+
+- `teensy_io/commands`
+
+Example command payload:
+
+```json
+{"op":"pwm_write","name":"motor_pwm","duty":0.25}
+```
+
+A systemd template for Jetson deployment is in:
+
+```txt
+deployment/systemd/teensy-io-bridge.service
+```
+
+Daemon/Unix socket IPC is intentionally deferred; see [FUTURE.md](FUTURE.md).
 
 ## Firmware build
 

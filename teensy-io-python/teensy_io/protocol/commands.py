@@ -54,3 +54,10 @@ class ErrorCode(IntEnum):
     INVALID_MODE = 0x04
     EMERGENCY_STOP_ACTIVE = 0x05
     RESOURCE_UNAVAILABLE = 0x06
+
+
+class ResourceKind(IntEnum):
+    DIGITAL = 1
+    ANALOG = 2
+    COUNTER = 3
+    ENCODER = 4

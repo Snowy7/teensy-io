@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from teensy_io.protocol.commands import CommandId
+from teensy_io.protocol.commands import CommandId, ResourceKind
 
 
 class Pin:
@@ -32,7 +32,11 @@ class Pin:
         self.io._command(CommandId.DIGITAL_WRITE, bytes([self.physical_pin, int(value)]), expect_response=True)
 
     def on_edge(self, edge: str, callback: Callable[..., None]) -> None:
-        raise NotImplementedError("edge events are reserved for the telemetry/event phase")
+        self._require_pin()
+        key = (ResourceKind.DIGITAL, self.physical_pin)
+        self.io._edge_callbacks.setdefault(key, []).append(callback)
+        edge_flags = {"rising": 0x02, "falling": 0x04, "both": 0x06}[edge]
+        self.io._command(CommandId.SUBSCRIBE, bytes([ResourceKind.DIGITAL, self.physical_pin, 0, 0, 0x01 | edge_flags]))
 
     def _require_pin(self) -> None:
         if self.physical_pin is None:

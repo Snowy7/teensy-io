@@ -15,6 +15,11 @@ pins:
     frequency: 20000
     initial_duty: 0.0
 
+  battery_voltage:
+    type: analog
+    physical_pin: 14
+    samples: 8
+
 inputs:
   wheel_pulse:
     physical_pin: 7
@@ -25,3 +30,9 @@ counters:
   wheel_ticks:
     input: wheel_pulse
     edge: rising
+
+encoders:
+  steering_encoder:
+    pin_a: 5
+    pin_b: 6
+    mode: x4

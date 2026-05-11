@@ -43,6 +43,20 @@ static void counter_tick(uint8_t id) {
   g_counters[id].last_edge_us = now;
 }
 
+static uint8_t encoder_state(uint8_t pin_a, uint8_t pin_b) {
+  return static_cast<uint8_t>((digitalRead(pin_a) == HIGH ? 2 : 0) | (digitalRead(pin_b) == HIGH ? 1 : 0));
+}
+
+static int8_t encoder_delta(uint8_t previous, uint8_t current) {
+  static const int8_t table[16] = {
+      0, -1, 1, 0,
+      1, 0, 0, -1,
+      -1, 0, 0, 1,
+      0, 1, -1, 0,
+  };
+  return table[((previous & 0x03) << 2) | (current & 0x03)];
+}
+
 void counter_isr_0() { counter_tick(0); }
 void counter_isr_1() { counter_tick(1); }
 void counter_isr_2() { counter_tick(2); }
@@ -69,8 +83,14 @@ void CommandHandler::handle(const Packet& packet) {
     handle_digital(command, packet);
   } else if (group == 0x20) {
     handle_pwm(command, packet);
+  } else if (group == 0x30) {
+    handle_analog(command, packet);
   } else if (group == 0x40) {
     handle_counter(command, packet);
+  } else if (group == 0x50) {
+    handle_encoder(command, packet);
+  } else if (group == 0x60) {
+    handle_subscription(command, packet);
   } else {
     nack(packet.seq, ErrorCode::UnknownCommand);
   }
@@ -82,6 +102,8 @@ void CommandHandler::update() {
   if (allowed_before && !safety_.outputs_allowed()) {
     apply_safe_outputs();
   }
+  update_encoders();
+  update_subscriptions();
 }
 
 void CommandHandler::ack(uint16_t seq) {
@@ -96,6 +118,20 @@ void CommandHandler::nack(uint16_t seq, ErrorCode code) {
 
 void CommandHandler::data(uint16_t seq, const uint8_t* payload, uint16_t length) {
   writer_.write(PacketType::Data, seq, payload, length);
+}
+
+void CommandHandler::write_i32(uint8_t* payload, int32_t value) {
+  payload[0] = static_cast<uint8_t>(value & 0xFF);
+  payload[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+  payload[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+  payload[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+}
+
+void CommandHandler::write_u32(uint8_t* payload, uint32_t value) {
+  payload[0] = static_cast<uint8_t>(value & 0xFF);
+  payload[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+  payload[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+  payload[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
 }
 
 void CommandHandler::apply_safe_outputs() {
@@ -142,6 +178,10 @@ void CommandHandler::handle_system(CommandId command, const Packet& packet) {
         g_counters[i] = CounterSlot{};
       }
       memset(pwm_configured_, 0, sizeof(pwm_configured_));
+      memset(analog_configured_, 0, sizeof(analog_configured_));
+      memset(analog_samples_, 0, sizeof(analog_samples_));
+      memset(encoders_, 0, sizeof(encoders_));
+      memset(subscriptions_, 0, sizeof(subscriptions_));
       ack(packet.seq);
       break;
     default:
@@ -301,6 +341,57 @@ void CommandHandler::handle_pwm(CommandId command, const Packet& packet) {
   }
 }
 
+void CommandHandler::handle_analog(CommandId command, const Packet& packet) {
+  switch (command) {
+    case CommandId::ConfigAnalog: {
+      if (packet.length < 3) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint8_t pin = packet.payload[1];
+      const uint8_t samples = packet.payload[2] == 0 ? 1 : packet.payload[2];
+      if (!is_valid_analog_pin(pin)) {
+        nack(packet.seq, ErrorCode::InvalidPin);
+        return;
+      }
+      analogReadResolution(12);
+      analog_configured_[pin] = true;
+      analog_samples_[pin] = samples;
+      ack(packet.seq);
+      break;
+    }
+    case CommandId::AnalogRead: {
+      if (packet.length < 2) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint8_t pin = packet.payload[1];
+      if (!is_valid_analog_pin(pin) || !analog_configured_[pin]) {
+        nack(packet.seq, ErrorCode::InvalidPin);
+        return;
+      }
+      const uint8_t samples = analog_samples_[pin] == 0 ? 1 : analog_samples_[pin];
+      uint32_t total = 0;
+      for (uint8_t i = 0; i < samples; ++i) {
+        total += analogRead(pin);
+      }
+      const uint16_t raw = static_cast<uint16_t>(total / samples);
+      const uint16_t normalized = static_cast<uint16_t>((static_cast<uint32_t>(raw) * 10000UL) / kAdcMaxValue);
+      uint8_t payload[4] = {
+          static_cast<uint8_t>(raw & 0xFF),
+          static_cast<uint8_t>((raw >> 8) & 0xFF),
+          static_cast<uint8_t>(normalized & 0xFF),
+          static_cast<uint8_t>((normalized >> 8) & 0xFF),
+      };
+      data(packet.seq, payload, sizeof(payload));
+      break;
+    }
+    default:
+      nack(packet.seq, ErrorCode::UnknownCommand);
+      break;
+  }
+}
+
 bool CommandHandler::configure_counter(uint8_t id, uint8_t pin, EdgeMode edge) {
   if (id >= kMaxCounters || !is_valid_digital_pin(pin)) {
     return false;
@@ -313,6 +404,21 @@ bool CommandHandler::configure_counter(uint8_t id, uint8_t pin, EdgeMode edge) {
   g_counters[id].pin = pin;
   g_counters[id].edge = edge;
   attachInterrupt(digitalPinToInterrupt(pin), counter_isr_for(id), edge_to_interrupt_mode(edge));
+  return true;
+}
+
+bool CommandHandler::configure_encoder(uint8_t id, uint8_t pin_a, uint8_t pin_b, uint8_t mode) {
+  if (id >= kMaxEncoders || !is_valid_digital_pin(pin_a) || !is_valid_digital_pin(pin_b)) {
+    return false;
+  }
+  pinMode(pin_a, INPUT);
+  pinMode(pin_b, INPUT);
+  encoders_[id] = EncoderSlot{};
+  encoders_[id].active = true;
+  encoders_[id].pin_a = pin_a;
+  encoders_[id].pin_b = pin_b;
+  encoders_[id].mode = mode;
+  encoders_[id].last_state = encoder_state(pin_a, pin_b);
   return true;
 }
 
@@ -343,11 +449,9 @@ void CommandHandler::handle_counter(CommandId command, const Packet& packet) {
       const int32_t count = g_counters[id].count;
       interrupts();
       uint8_t payload[4] = {
-          static_cast<uint8_t>(count & 0xFF),
-          static_cast<uint8_t>((count >> 8) & 0xFF),
-          static_cast<uint8_t>((count >> 16) & 0xFF),
-          static_cast<uint8_t>((count >> 24) & 0xFF),
+          0,
       };
+      write_i32(payload, count);
       data(packet.seq, payload, sizeof(payload));
       break;
     }
@@ -376,17 +480,217 @@ void CommandHandler::handle_counter(CommandId command, const Packet& packet) {
       interrupts();
       const uint32_t milli_hz = period_us == 0 ? 0 : 1000000000UL / period_us;
       uint8_t payload[4] = {
-          static_cast<uint8_t>(milli_hz & 0xFF),
-          static_cast<uint8_t>((milli_hz >> 8) & 0xFF),
-          static_cast<uint8_t>((milli_hz >> 16) & 0xFF),
-          static_cast<uint8_t>((milli_hz >> 24) & 0xFF),
+          0,
       };
+      write_u32(payload, milli_hz);
       data(packet.seq, payload, sizeof(payload));
       break;
     }
     default:
       nack(packet.seq, ErrorCode::UnknownCommand);
       break;
+  }
+}
+
+void CommandHandler::handle_encoder(CommandId command, const Packet& packet) {
+  switch (command) {
+    case CommandId::ConfigEncoder: {
+      if (packet.length < 5) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint8_t id = packet.payload[1];
+      const uint8_t pin_a = packet.payload[2];
+      const uint8_t pin_b = packet.payload[3];
+      const uint8_t mode = packet.payload[4];
+      if (!configure_encoder(id, pin_a, pin_b, mode)) {
+        nack(packet.seq, ErrorCode::InvalidPin);
+        return;
+      }
+      ack(packet.seq);
+      break;
+    }
+    case CommandId::EncoderRead: {
+      if (packet.length < 2 || packet.payload[1] >= kMaxEncoders || !encoders_[packet.payload[1]].active) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint8_t id = packet.payload[1];
+      uint8_t payload[4] = {0};
+      write_i32(payload, encoders_[id].position);
+      data(packet.seq, payload, sizeof(payload));
+      break;
+    }
+    case CommandId::EncoderReset: {
+      if (packet.length < 2 || packet.payload[1] >= kMaxEncoders || !encoders_[packet.payload[1]].active) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      encoders_[packet.payload[1]].position = 0;
+      ack(packet.seq);
+      break;
+    }
+    default:
+      nack(packet.seq, ErrorCode::UnknownCommand);
+      break;
+  }
+}
+
+void CommandHandler::handle_subscription(CommandId command, const Packet& packet) {
+  switch (command) {
+    case CommandId::Subscribe: {
+      if (packet.length < 6) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const ResourceKind kind = static_cast<ResourceKind>(packet.payload[1]);
+      const uint8_t id = packet.payload[2];
+      const uint16_t rate_hz = static_cast<uint16_t>(packet.payload[3]) | (static_cast<uint16_t>(packet.payload[4]) << 8);
+      const uint8_t flags = packet.payload[5];
+      bool ok = false;
+      (void)read_resource_value(kind, id, ok);
+      if (!ok) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      for (uint8_t i = 0; i < kMaxSubscriptions; ++i) {
+        if (!subscriptions_[i].active) {
+          subscriptions_[i].active = true;
+          subscriptions_[i].kind = kind;
+          subscriptions_[i].id = id;
+          subscriptions_[i].rate_hz = rate_hz;
+          subscriptions_[i].flags = flags;
+          subscriptions_[i].next_due_ms = millis();
+          subscriptions_[i].has_last_value = false;
+          ack(packet.seq);
+          return;
+        }
+      }
+      nack(packet.seq, ErrorCode::ResourceUnavailable);
+      break;
+    }
+    case CommandId::Unsubscribe: {
+      if (packet.length < 3) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const ResourceKind kind = static_cast<ResourceKind>(packet.payload[1]);
+      const uint8_t id = packet.payload[2];
+      for (uint8_t i = 0; i < kMaxSubscriptions; ++i) {
+        if (subscriptions_[i].active && subscriptions_[i].kind == kind && subscriptions_[i].id == id) {
+          subscriptions_[i] = SubscriptionSlot{};
+        }
+      }
+      ack(packet.seq);
+      break;
+    }
+    default:
+      nack(packet.seq, ErrorCode::UnknownCommand);
+      break;
+  }
+}
+
+int32_t CommandHandler::read_resource_value(ResourceKind kind, uint8_t id, bool& ok) {
+  ok = true;
+  switch (kind) {
+    case ResourceKind::Digital:
+      if (!is_valid_digital_pin(id)) {
+        ok = false;
+        return 0;
+      }
+      return digitalRead(id) == HIGH ? 1 : 0;
+    case ResourceKind::Analog: {
+      if (!is_valid_analog_pin(id) || !analog_configured_[id]) {
+        ok = false;
+        return 0;
+      }
+      const uint8_t samples = analog_samples_[id] == 0 ? 1 : analog_samples_[id];
+      uint32_t total = 0;
+      for (uint8_t i = 0; i < samples; ++i) {
+        total += analogRead(id);
+      }
+      return static_cast<int32_t>(total / samples);
+    }
+    case ResourceKind::Counter:
+      if (id >= kMaxCounters || !g_counters[id].active) {
+        ok = false;
+        return 0;
+      }
+      noInterrupts();
+      {
+        const int32_t count = g_counters[id].count;
+        interrupts();
+        return count;
+      }
+    case ResourceKind::Encoder:
+      if (id >= kMaxEncoders || !encoders_[id].active) {
+        ok = false;
+        return 0;
+      }
+      return encoders_[id].position;
+  }
+  ok = false;
+  return 0;
+}
+
+void CommandHandler::update_encoders() {
+  for (uint8_t i = 0; i < kMaxEncoders; ++i) {
+    if (!encoders_[i].active) {
+      continue;
+    }
+    const uint8_t current = encoder_state(encoders_[i].pin_a, encoders_[i].pin_b);
+    const int8_t delta = encoder_delta(encoders_[i].last_state, current);
+    encoders_[i].position += delta;
+    encoders_[i].last_state = current;
+  }
+}
+
+void CommandHandler::update_subscriptions() {
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < kMaxSubscriptions; ++i) {
+    if (!subscriptions_[i].active) {
+      continue;
+    }
+    bool ok = false;
+    const int32_t value = read_resource_value(subscriptions_[i].kind, subscriptions_[i].id, ok);
+    if (!ok) {
+      subscriptions_[i] = SubscriptionSlot{};
+      continue;
+    }
+    const bool on_change = (subscriptions_[i].flags & 0x01) != 0;
+    if (on_change && subscriptions_[i].has_last_value && value != subscriptions_[i].last_value) {
+      bool should_emit = true;
+      if (subscriptions_[i].kind == ResourceKind::Digital) {
+        const bool rising = subscriptions_[i].last_value == 0 && value != 0;
+        const bool falling = subscriptions_[i].last_value != 0 && value == 0;
+        const bool wants_rising = (subscriptions_[i].flags & 0x02) != 0;
+        const bool wants_falling = (subscriptions_[i].flags & 0x04) != 0;
+        should_emit = (rising && wants_rising) || (falling && wants_falling) || (!wants_rising && !wants_falling);
+      }
+      if (should_emit) {
+        uint8_t payload[10] = {
+            static_cast<uint8_t>(subscriptions_[i].kind),
+            subscriptions_[i].id,
+        };
+        write_i32(&payload[2], value);
+        write_u32(&payload[6], micros());
+        writer_.write(PacketType::Event, 0, payload, sizeof(payload));
+      }
+    }
+    subscriptions_[i].last_value = value;
+    subscriptions_[i].has_last_value = true;
+
+    if (subscriptions_[i].rate_hz == 0 || now < subscriptions_[i].next_due_ms) {
+      continue;
+    }
+    uint8_t payload[6] = {
+        static_cast<uint8_t>(subscriptions_[i].kind),
+        subscriptions_[i].id,
+    };
+    write_i32(&payload[2], value);
+    writer_.write(PacketType::Telemetry, 0, payload, sizeof(payload));
+    const uint32_t interval_ms = 1000UL / subscriptions_[i].rate_hz;
+    subscriptions_[i].next_due_ms = now + (interval_ms == 0 ? 1 : interval_ms);
   }
 }
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Callable, Optional
 
-from teensy_io.protocol.commands import CommandId, ErrorCode, PacketType
+from teensy_io.protocol.commands import CommandId, ErrorCode, PacketType, ResourceKind
 from teensy_io.protocol.packet import Packet, PacketDecoder, encode_packet
 from teensy_io.transport.base import Transport
 
@@ -64,6 +64,14 @@ class ScriptedTransport(Transport):
             return Packet(PacketType.DATA, request.seq, (123).to_bytes(4, "little", signed=True))
         if command == CommandId.COUNTER_FREQUENCY:
             return Packet(PacketType.DATA, request.seq, (12500).to_bytes(4, "little"))
+        if command == CommandId.ANALOG_READ:
+            return Packet(PacketType.DATA, request.seq, (2048).to_bytes(2, "little") + (5001).to_bytes(2, "little"))
+        if command == CommandId.ENCODER_READ:
+            return Packet(PacketType.DATA, request.seq, (321).to_bytes(4, "little", signed=True))
+        if command == CommandId.SUBSCRIBE:
+            kind = ResourceKind(request.payload[1])
+            resource_id = request.payload[2]
+            return Packet(PacketType.ACK, request.seq, bytes([ErrorCode.OK]))
         return Packet(PacketType.ACK, request.seq, bytes([ErrorCode.OK]))
 
 

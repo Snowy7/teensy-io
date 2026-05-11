@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import itertools
+import queue
 import struct
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from .config.loader import load_config
-from .protocol.commands import CommandId, ErrorCode, PacketType
+from .protocol.commands import CommandId, ErrorCode, PacketType, ResourceKind
 from .protocol.errors import (
     CommandRejectedError,
     EmergencyStopActiveError,
@@ -18,6 +19,7 @@ from .protocol.errors import (
     ProtocolError,
     TeensyIOTimeoutError,
 )
+from .protocol.frames import EdgeEvent, TelemetryFrame
 from .protocol.packet import Packet, PacketDecoder, encode_packet
 from .resources.analog import AnalogInput
 from .resources.counter import PulseCounter
@@ -55,7 +57,12 @@ class TeensyIO:
         self._counters: dict[str, PulseCounter] = {}
         self._encoders: dict[str, QuadratureEncoder] = {}
         self._counter_ids: dict[str, int] = {}
+        self._encoder_ids: dict[str, int] = {}
         self._config: dict[str, Any] = {}
+        self._telemetry_queue: "queue.Queue[TelemetryFrame]" = queue.Queue()
+        self._event_queue: "queue.Queue[EdgeEvent]" = queue.Queue()
+        self._telemetry_callbacks: list[Callable[[TelemetryFrame], None]] = []
+        self._edge_callbacks: dict[tuple[ResourceKind, int], list[Callable[[EdgeEvent], None]]] = {}
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_stop = threading.Event()
         self._flush_thread: threading.Thread | None = None
@@ -174,6 +181,9 @@ class TeensyIO:
             pin_name = spec.get("pin") or spec.get("input")
             self.counter(name).attach(pin=pin_name, edge=spec.get("edge", "rising"))
 
+        for name, spec in self._config.get("encoders", {}).items():
+            self.encoder(name).attach(spec["pin_a"], spec["pin_b"], mode=spec.get("mode", "x4"))
+
     def begin_batch(self) -> None:
         self._batch_depth += 1
 
@@ -194,13 +204,37 @@ class TeensyIO:
                 self.flush()
 
     def subscribe(self, name: str, rate_hz: float | None = None, on_change: bool = False) -> None:
-        raise NotImplementedError("telemetry subscriptions are reserved for the next protocol phase")
+        kind, resource_id = self._resource_ref(name)
+        hz = 0 if rate_hz is None else int(rate_hz)
+        flags = 1 if on_change else 0
+        self._command(CommandId.SUBSCRIBE, bytes([int(kind), resource_id]) + struct.pack("<H", hz) + bytes([flags]))
 
-    def read_telemetry(self) -> dict[str, Any]:
-        raise NotImplementedError("telemetry subscriptions are reserved for the next protocol phase")
+    def unsubscribe(self, name: str) -> None:
+        kind, resource_id = self._resource_ref(name)
+        self._command(CommandId.UNSUBSCRIBE, bytes([int(kind), resource_id]))
 
-    def on_telemetry(self, callback: Any) -> None:
-        raise NotImplementedError("telemetry subscriptions are reserved for the next protocol phase")
+    def read_telemetry(self, timeout: float | None = None) -> TelemetryFrame:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            try:
+                return self._telemetry_queue.get_nowait()
+            except queue.Empty:
+                self._poll_async_packets(timeout=0.01)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TeensyIOTimeoutError("timeout waiting for telemetry")
+
+    def read_event(self, timeout: float | None = None) -> EdgeEvent:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            try:
+                return self._event_queue.get_nowait()
+            except queue.Empty:
+                self._poll_async_packets(timeout=0.01)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TeensyIOTimeoutError("timeout waiting for event")
+
+    def on_telemetry(self, callback: Callable[[TelemetryFrame], None]) -> None:
+        self._telemetry_callbacks.append(callback)
 
     def _command(self, command: CommandId, payload: bytes = b"", *, expect_response: bool = True) -> bytes:
         seq = next(self._seq) & 0xFFFF
@@ -235,7 +269,48 @@ class TeensyIO:
             for packet in self._decoder.feed(data):
                 if packet.seq == seq:
                     return packet
+                self._handle_async_packet(packet)
         raise TeensyIOTimeoutError(f"timeout waiting for response seq={seq}")
+
+    def _poll_async_packets(self, timeout: float = 0.0) -> None:
+        deadline = time.monotonic() + timeout
+        while True:
+            data = self.transport.read(64)
+            if data:
+                for packet in self._decoder.feed(data):
+                    self._handle_async_packet(packet)
+                return
+            if timeout <= 0 or time.monotonic() >= deadline:
+                return
+
+    def _handle_async_packet(self, packet: Packet) -> None:
+        if packet.type == PacketType.TELEMETRY and len(packet.payload) >= 6:
+            try:
+                kind = ResourceKind(packet.payload[0])
+            except ValueError:
+                return
+            frame = TelemetryFrame(
+                kind,
+                packet.payload[1],
+                self._unpack_i32(packet.payload[2:6]),
+            )
+            self._telemetry_queue.put(frame)
+            for callback in list(self._telemetry_callbacks):
+                callback(frame)
+        elif packet.type == PacketType.EVENT and len(packet.payload) >= 10:
+            try:
+                kind = ResourceKind(packet.payload[0])
+            except ValueError:
+                return
+            event = EdgeEvent(
+                kind,
+                packet.payload[1],
+                self._unpack_i32(packet.payload[2:6]),
+                self._unpack_u32(packet.payload[6:10]),
+            )
+            self._event_queue.put(event)
+            for callback in list(self._edge_callbacks.get((event.kind, event.resource_id), [])):
+                callback(event)
 
     def _raise_for_error(self, code: ErrorCode) -> None:
         if code == ErrorCode.INVALID_PIN:
@@ -268,6 +343,22 @@ class TeensyIO:
         if name not in self._counter_ids:
             self._counter_ids[name] = len(self._counter_ids)
         return self._counter_ids[name]
+
+    def _encoder_id(self, name: str) -> int:
+        if name not in self._encoder_ids:
+            self._encoder_ids[name] = len(self._encoder_ids)
+        return self._encoder_ids[name]
+
+    def _resource_ref(self, name: str) -> tuple[ResourceKind, int]:
+        if name in self._pins and self._pins[name].physical_pin is not None:
+            return ResourceKind.DIGITAL, self._pins[name].physical_pin
+        if name in self._analogs and self._analogs[name].physical_pin is not None:
+            return ResourceKind.ANALOG, self._analogs[name].physical_pin
+        if name in self._counters and self._counters[name].id is not None:
+            return ResourceKind.COUNTER, self._counters[name].id
+        if name in self._encoders and self._encoders[name].id is not None:
+            return ResourceKind.ENCODER, self._encoders[name].id
+        raise KeyError(f"unknown or unconfigured resource: {name}")
 
     @staticmethod
     def _u8_duty(duty: float) -> int:

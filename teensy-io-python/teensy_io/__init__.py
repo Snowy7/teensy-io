@@ -1,4 +1,5 @@
 from .client import TeensyIO
+from .protocol.frames import EdgeEvent, TelemetryFrame
 from .protocol.errors import (
     CommandRejectedError,
     ConnectionLostError,
@@ -14,10 +15,12 @@ from .protocol.errors import (
 __all__ = [
     "CommandRejectedError",
     "ConnectionLostError",
+    "EdgeEvent",
     "EmergencyStopActiveError",
     "InvalidModeError",
     "InvalidPinError",
     "ProtocolError",
+    "TelemetryFrame",
     "TeensyIO",
     "TeensyIOError",
     "TeensyIOTimeoutError",

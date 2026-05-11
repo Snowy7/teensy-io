@@ -1,0 +1,15 @@
+[Unit]
+Description=Teensy IO ROS2 bridge
+After=network.target
+
+[Service]
+Type=simple
+User=robot
+Group=dialout
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/local/bin/teensy-io-bridge --ros-args -p port:=/dev/ttyACM0 -p baudrate:=1000000 -p config:=/etc/teensy-io/io.yaml
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
