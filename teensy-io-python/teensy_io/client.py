@@ -5,6 +5,7 @@ import queue
 import struct
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -17,6 +18,7 @@ from .protocol.errors import (
     InvalidModeError,
     InvalidPinError,
     ProtocolError,
+    QueueFullError,
     TeensyIOTimeoutError,
 )
 from .protocol.frames import EdgeEvent, TelemetryFrame
@@ -40,6 +42,8 @@ class TeensyIO:
         timeout: float = 1.0,
         auto_flush: bool = True,
         flush_rate_hz: float | None = None,
+        queue_max_bytes: int | None = None,
+        flush_chunk_size: int = 65536,
     ) -> None:
         if transport is None and port is None:
             raise ValueError("port or transport is required")
@@ -47,10 +51,14 @@ class TeensyIO:
         self.timeout = timeout
         self.auto_flush = auto_flush
         self.flush_rate_hz = flush_rate_hz
+        self.queue_max_bytes = queue_max_bytes
+        self.flush_chunk_size = flush_chunk_size
         self._decoder = PacketDecoder()
         self._seq = itertools.count(1)
+        self._lock = threading.RLock()
         self._batch_depth = 0
-        self._queued: list[bytes] = []
+        self._queued: deque[bytes] = deque()
+        self._queued_bytes = 0
         self._pins: dict[str, Pin] = {}
         self._pwms: dict[str, PwmOutput] = {}
         self._analogs: dict[str, AnalogInput] = {}
@@ -67,6 +75,16 @@ class TeensyIO:
         self._heartbeat_stop = threading.Event()
         self._flush_thread: threading.Thread | None = None
         self._flush_stop = threading.Event()
+
+    @property
+    def queued_packet_count(self) -> int:
+        with self._lock:
+            return len(self._queued)
+
+    @property
+    def queued_byte_count(self) -> int:
+        with self._lock:
+            return self._queued_bytes
 
     @classmethod
     def from_config(cls, path: str | Path) -> "TeensyIO":
@@ -88,7 +106,7 @@ class TeensyIO:
     def close(self) -> None:
         self.stop_heartbeat()
         self._stop_auto_flush()
-        if self._queued:
+        if self.queued_packet_count:
             self.flush()
         self.transport.close()
 
@@ -185,13 +203,24 @@ class TeensyIO:
             self.encoder(name).attach(spec["pin_a"], spec["pin_b"], mode=spec.get("mode", "x4"))
 
     def begin_batch(self) -> None:
-        self._batch_depth += 1
+        with self._lock:
+            self._batch_depth += 1
 
     def flush(self) -> None:
-        queued = self._queued
-        self._queued = []
-        for data in queued:
-            self.transport.write(data)
+        while True:
+            with self._lock:
+                if not self._queued:
+                    return
+                chunk = bytearray()
+                while self._queued and len(chunk) + len(self._queued[0]) <= self.flush_chunk_size:
+                    item = self._queued.popleft()
+                    chunk.extend(item)
+                    self._queued_bytes -= len(item)
+                if not chunk and self._queued:
+                    item = self._queued.popleft()
+                    chunk.extend(item)
+                    self._queued_bytes -= len(item)
+            self.transport.write(bytes(chunk))
 
     @contextmanager
     def batch(self) -> Iterator[None]:
@@ -199,8 +228,10 @@ class TeensyIO:
         try:
             yield
         finally:
-            self._batch_depth -= 1
-            if self._batch_depth == 0:
+            with self._lock:
+                self._batch_depth -= 1
+                should_flush = self._batch_depth == 0
+            if should_flush:
                 self.flush()
 
     def subscribe(self, name: str, rate_hz: float | None = None, on_change: bool = False) -> None:
@@ -241,9 +272,14 @@ class TeensyIO:
         packet = Packet(PacketType.COMMAND, seq, bytes([int(command)]) + payload)
         encoded = encode_packet(packet)
 
-        if self._batch_depth or (self.flush_rate_hz and not expect_response):
-            self._queued.append(encoded)
-            if self.auto_flush and not self.flush_rate_hz and self._batch_depth == 0:
+        with self._lock:
+            should_queue = self._batch_depth > 0 or (self.flush_rate_hz is not None and not expect_response)
+
+        if should_queue:
+            self._queue_packet(encoded)
+            with self._lock:
+                should_flush = self.auto_flush and not self.flush_rate_hz and self._batch_depth == 0
+            if should_flush:
                 self.flush()
             return b""
 
@@ -282,6 +318,16 @@ class TeensyIO:
                 return
             if timeout <= 0 or time.monotonic() >= deadline:
                 return
+
+    def _queue_packet(self, encoded: bytes) -> None:
+        with self._lock:
+            next_size = self._queued_bytes + len(encoded)
+            if self.queue_max_bytes is not None and next_size > self.queue_max_bytes:
+                raise QueueFullError(
+                    f"queued command bytes would exceed limit: {next_size} > {self.queue_max_bytes}"
+                )
+            self._queued.append(encoded)
+            self._queued_bytes = next_size
 
     def _handle_async_packet(self, packet: Packet) -> None:
         if packet.type == PacketType.TELEMETRY and len(packet.payload) >= 6:

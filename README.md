@@ -59,6 +59,25 @@ io.pin("led").write(True)
 io.close()
 ```
 
+## High-rate batching
+
+For frame-by-frame control loops, queue command writes and flush once per frame:
+
+```python
+io = TeensyIO(
+    "/dev/ttyACM0",
+    baudrate=1_000_000,
+    flush_chunk_size=65_536,
+    queue_max_bytes=None,
+).connect()
+
+with io.batch():
+    io.pwm("motor").write(0.25)
+    io.pin("enable").write(True)
+```
+
+The Python client stores queued packets in a thread-safe byte-counted queue and coalesces them into large serial writes on `flush()`. Set `queue_max_bytes` to a real number if you want explicit backpressure instead of an unbounded queue.
+
 ## Jetson ROS2 bridge
 
 The bridge is optional and expects ROS2 Python packages to be installed on the Jetson:
@@ -101,6 +120,12 @@ The firmware package is set up for PlatformIO:
 ```bash
 cd teensy-io-firmware
 pio run
+```
+
+If PlatformIO was installed with `python3 -m pip install --user platformio` and `pio` is not on `PATH`, use:
+
+```bash
+/Users/islam/Library/Python/3.9/bin/pio run
 ```
 
 The default board is `teensy41`. Adjust `platformio.ini` for a different Teensy model.

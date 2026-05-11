@@ -26,6 +26,10 @@ class CommandRejectedError(TeensyIOError):
     pass
 
 
+class QueueFullError(TeensyIOError):
+    pass
+
+
 class EmergencyStopActiveError(CommandRejectedError):
     pass
 

@@ -180,8 +180,12 @@ void CommandHandler::handle_system(CommandId command, const Packet& packet) {
       memset(pwm_configured_, 0, sizeof(pwm_configured_));
       memset(analog_configured_, 0, sizeof(analog_configured_));
       memset(analog_samples_, 0, sizeof(analog_samples_));
-      memset(encoders_, 0, sizeof(encoders_));
-      memset(subscriptions_, 0, sizeof(subscriptions_));
+      for (uint8_t i = 0; i < kMaxEncoders; ++i) {
+        encoders_[i] = EncoderSlot{};
+      }
+      for (uint8_t i = 0; i < kMaxSubscriptions; ++i) {
+        subscriptions_[i] = SubscriptionSlot{};
+      }
       ack(packet.seq);
       break;
     default:

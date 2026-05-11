@@ -9,6 +9,7 @@ from teensy_io import (
     EmergencyStopActiveError,
     InvalidModeError,
     InvalidPinError,
+    QueueFullError,
     TeensyIO,
     TeensyIOTimeoutError,
 )
@@ -117,7 +118,7 @@ def test_batch_queues_commands_and_flushes_on_exit() -> None:
         io.pin("relay").write(True)
         io.pwm("output").write(0.25)
 
-    assert len(transport.writes) == 2
+    assert len(transport.writes) == 1
     assert [request.payload[0] for request in transport.requests] == [CommandId.DIGITAL_WRITE, CommandId.PWM_WRITE]
 
 
@@ -131,6 +132,50 @@ def test_close_flushes_queued_commands() -> None:
     assert transport.writes == []
     io.close()
     assert len(transport.writes) == 1
+
+
+def test_large_batch_flushes_as_coalesced_chunks_without_dropping_packets() -> None:
+    transport = ScriptedTransport()
+    io = TeensyIO(transport=transport, flush_chunk_size=4096).connect()
+    io.pin("led").physical_pin = 13
+    count = 2000
+
+    with io.batch():
+        for index in range(count):
+            io.pin("led").write(index % 2 == 0)
+            assert io.queued_packet_count >= 0
+            assert io.queued_byte_count >= 0
+
+    assert len(transport.requests) == count
+    assert io.queued_packet_count == 0
+    assert io.queued_byte_count == 0
+    assert 1 < len(transport.writes) < count
+
+
+def test_large_batch_can_flush_in_one_write_when_chunk_is_large_enough() -> None:
+    transport = ScriptedTransport()
+    io = TeensyIO(transport=transport, flush_chunk_size=1_000_000).connect()
+    io.pin("led").physical_pin = 13
+
+    with io.batch():
+        for _ in range(1000):
+            io.pin("led").write(True)
+
+    assert len(transport.requests) == 1000
+    assert len(transport.writes) == 1
+
+
+def test_queue_max_bytes_applies_backpressure_before_memory_growth() -> None:
+    io = TeensyIO(transport=ScriptedTransport(), queue_max_bytes=20).connect()
+    io.pin("led").physical_pin = 13
+    io.begin_batch()
+
+    io.pin("led").write(True)
+    with pytest.raises(QueueFullError):
+        for _ in range(10):
+            io.pin("led").write(True)
+
+    assert io.queued_byte_count <= 20
 
 
 def test_auto_flush_thread_flushes_queued_fire_and_forget_command() -> None:
