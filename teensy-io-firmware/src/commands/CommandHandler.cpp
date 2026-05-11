@@ -1,5 +1,6 @@
 #include "CommandHandler.h"
 
+#include <Wire.h>
 #include <string.h>
 
 #include "../board/BoardConfig.h"
@@ -29,6 +30,23 @@ static int edge_to_interrupt_mode(EdgeMode edge) {
       return CHANGE;
   }
   return RISING;
+}
+
+static TwoWire* wire_for_bus(uint8_t bus) {
+  switch (bus) {
+    case 0:
+      return &Wire;
+#if defined(WIRE_IMPLEMENT_WIRE1) || defined(__IMXRT1062__)
+    case 1:
+      return &Wire1;
+#endif
+#if defined(WIRE_IMPLEMENT_WIRE2) || defined(__IMXRT1062__)
+    case 2:
+      return &Wire2;
+#endif
+    default:
+      return nullptr;
+  }
 }
 
 static uint8_t encoder_state(uint8_t pin_a, uint8_t pin_b) {
@@ -117,6 +135,8 @@ void CommandHandler::handle(const Packet& packet) {
     handle_encoder(command, packet);
   } else if (group == 0x60) {
     handle_subscription(command, packet);
+  } else if (group == 0x70) {
+    handle_i2c(command, packet);
   } else {
     nack(packet.seq, ErrorCode::UnknownCommand);
   }
@@ -214,6 +234,10 @@ void CommandHandler::handle_system(CommandId command, const Packet& packet) {
       }
       for (uint8_t i = 0; i < kMaxSubscriptions; ++i) {
         subscriptions_[i] = SubscriptionSlot{};
+      }
+      memset(i2c_configured_, 0, sizeof(i2c_configured_));
+      for (uint8_t i = 0; i < kMaxDacs; ++i) {
+        dacs_[i] = DacSlot{};
       }
       ack(packet.seq);
       break;
@@ -677,9 +701,193 @@ int32_t CommandHandler::read_resource_value(ResourceKind kind, uint8_t id, bool&
         interrupts();
         return position;
       }
+    case ResourceKind::Dac:
+      if (id >= kMaxDacs || !dacs_[id].active) {
+        ok = false;
+        return 0;
+      }
+      return dacs_[id].last_value;
   }
   ok = false;
   return 0;
+}
+
+bool CommandHandler::write_dac_raw(uint8_t id, uint8_t channel, uint16_t value) {
+  if (id >= kMaxDacs || !dacs_[id].active || channel >= dacs_[id].channels) {
+    return false;
+  }
+  TwoWire* wire = wire_for_bus(dacs_[id].bus);
+  if (wire == nullptr || !i2c_configured_[dacs_[id].bus]) {
+    return false;
+  }
+  const uint8_t resolution = dacs_[id].resolution_bits == 0 ? 12 : dacs_[id].resolution_bits;
+  const uint16_t max_value = resolution >= 16 ? 0xFFFF : static_cast<uint16_t>((1UL << resolution) - 1UL);
+  if (value > max_value) {
+    value = max_value;
+  }
+  wire->beginTransmission(dacs_[id].address);
+  if (dacs_[id].channels > 1) {
+    wire->write(channel);
+  }
+  wire->write(static_cast<uint8_t>((value >> 8) & 0xFF));
+  wire->write(static_cast<uint8_t>(value & 0xFF));
+  const uint8_t result = wire->endTransmission();
+  if (result != 0) {
+    return false;
+  }
+  dacs_[id].last_value = value;
+  return true;
+}
+
+void CommandHandler::handle_i2c(CommandId command, const Packet& packet) {
+  switch (command) {
+    case CommandId::ConfigI2cBus: {
+      if (packet.length < 6) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint8_t bus = packet.payload[1];
+      const uint32_t frequency = static_cast<uint32_t>(packet.payload[2]) |
+                                 (static_cast<uint32_t>(packet.payload[3]) << 8) |
+                                 (static_cast<uint32_t>(packet.payload[4]) << 16) |
+                                 (static_cast<uint32_t>(packet.payload[5]) << 24);
+      TwoWire* wire = wire_for_bus(bus);
+      if (bus >= kMaxI2cBuses || wire == nullptr) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      wire->begin();
+      wire->setClock(frequency == 0 ? 400000 : frequency);
+      i2c_configured_[bus] = true;
+      ack(packet.seq);
+      break;
+    }
+    case CommandId::I2cWrite: {
+      if (packet.length < 4) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint8_t bus = packet.payload[1];
+      const uint8_t address = packet.payload[2];
+      const uint8_t length = packet.payload[3];
+      if (bus >= kMaxI2cBuses || !i2c_configured_[bus] || packet.length < 4 + length) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      TwoWire* wire = wire_for_bus(bus);
+      if (wire == nullptr) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      wire->beginTransmission(address);
+      for (uint8_t i = 0; i < length; ++i) {
+        wire->write(packet.payload[4 + i]);
+      }
+      const uint8_t result = wire->endTransmission();
+      if (result != 0) {
+        nack(packet.seq, ErrorCode::ResourceUnavailable);
+        return;
+      }
+      ack(packet.seq);
+      break;
+    }
+    case CommandId::I2cRead: {
+      if (packet.length < 4) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint8_t bus = packet.payload[1];
+      const uint8_t address = packet.payload[2];
+      const uint8_t length = packet.payload[3];
+      if (bus >= kMaxI2cBuses || !i2c_configured_[bus] || length > kMaxPayloadSize) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      TwoWire* wire = wire_for_bus(bus);
+      if (wire == nullptr) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint8_t received = wire->requestFrom(static_cast<int>(address), static_cast<int>(length));
+      uint8_t payload[kMaxPayloadSize] = {};
+      for (uint8_t i = 0; i < received && wire->available(); ++i) {
+        payload[i] = static_cast<uint8_t>(wire->read());
+      }
+      data(packet.seq, payload, received);
+      break;
+    }
+    case CommandId::ConfigDac: {
+      if (packet.length < 6) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint8_t id = packet.payload[1];
+      const uint8_t bus = packet.payload[2];
+      const uint8_t address = packet.payload[3];
+      const uint8_t channels = packet.payload[4];
+      const uint8_t resolution = packet.payload[5];
+      if (id >= kMaxDacs || bus >= kMaxI2cBuses || !i2c_configured_[bus] || channels == 0 || resolution == 0 || resolution > 16) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      dacs_[id] = DacSlot{};
+      dacs_[id].active = true;
+      dacs_[id].bus = bus;
+      dacs_[id].address = address;
+      dacs_[id].channels = channels;
+      dacs_[id].resolution_bits = resolution;
+      ack(packet.seq);
+      break;
+    }
+    case CommandId::DacWriteRaw: {
+      if (packet.length < 5) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      if (!safety_.outputs_allowed()) {
+        nack(packet.seq, ErrorCode::EmergencyStopActive);
+        return;
+      }
+      const uint8_t id = packet.payload[1];
+      const uint8_t channel = packet.payload[2];
+      const uint16_t value = static_cast<uint16_t>(packet.payload[3]) | (static_cast<uint16_t>(packet.payload[4]) << 8);
+      if (!write_dac_raw(id, channel, value)) {
+        nack(packet.seq, ErrorCode::ResourceUnavailable);
+        return;
+      }
+      ack(packet.seq);
+      break;
+    }
+    case CommandId::DacWriteNormalized: {
+      if (packet.length < 5) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      if (!safety_.outputs_allowed()) {
+        nack(packet.seq, ErrorCode::EmergencyStopActive);
+        return;
+      }
+      const uint8_t id = packet.payload[1];
+      const uint8_t channel = packet.payload[2];
+      if (id >= kMaxDacs || !dacs_[id].active) {
+        nack(packet.seq, ErrorCode::InvalidPayload);
+        return;
+      }
+      const uint16_t normalized = static_cast<uint16_t>(packet.payload[3]) | (static_cast<uint16_t>(packet.payload[4]) << 8);
+      const uint8_t resolution = dacs_[id].resolution_bits == 0 ? 12 : dacs_[id].resolution_bits;
+      const uint16_t max_value = resolution >= 16 ? 0xFFFF : static_cast<uint16_t>((1UL << resolution) - 1UL);
+      const uint16_t value = static_cast<uint16_t>((static_cast<uint32_t>(normalized) * max_value) / 10000UL);
+      if (!write_dac_raw(id, channel, value)) {
+        nack(packet.seq, ErrorCode::ResourceUnavailable);
+        return;
+      }
+      ack(packet.seq);
+      break;
+    }
+    default:
+      nack(packet.seq, ErrorCode::UnknownCommand);
+      break;
+  }
 }
 
 void CommandHandler::update_subscriptions() {

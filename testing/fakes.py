@@ -68,6 +68,9 @@ class ScriptedTransport(Transport):
             return Packet(PacketType.DATA, request.seq, (2048).to_bytes(2, "little") + (5001).to_bytes(2, "little"))
         if command == CommandId.ENCODER_READ:
             return Packet(PacketType.DATA, request.seq, (321).to_bytes(4, "little", signed=True))
+        if command == CommandId.I2C_READ:
+            length = request.payload[3]
+            return Packet(PacketType.DATA, request.seq, bytes(range(length)))
         if command == CommandId.SUBSCRIBE:
             kind = ResourceKind(request.payload[1])
             resource_id = request.payload[2]

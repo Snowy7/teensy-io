@@ -65,6 +65,16 @@ def test_from_config_and_configure_all(tmp_path) -> None:
                 pin_a: 5
                 pin_b: 6
                 mode: x4
+            i2c_buses:
+              main_i2c:
+                bus: 0
+                frequency: 400000
+            dacs:
+              analog_out:
+                bus: main_i2c
+                address: 96
+                channels: 1
+                resolution_bits: 12
             """
         ),
         encoding="utf-8",
@@ -82,6 +92,8 @@ def test_from_config_and_configure_all(tmp_path) -> None:
         (CommandId.CONFIG_DIGITAL_INPUT, b"\x07\x01"),
         (CommandId.CONFIG_COUNTER, b"\x00\x07\x00"),
         (CommandId.CONFIG_ENCODER, b"\x00\x05\x06\x04"),
+        (CommandId.CONFIG_I2C_BUS, b"\x00\x80\x1a\x06\x00"),
+        (CommandId.CONFIG_DAC, b"\x00\x00\x60\x01\x0c"),
     ]
 
 

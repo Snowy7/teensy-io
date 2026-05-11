@@ -46,6 +46,23 @@ def validate_config(config: dict) -> None:
         if spec.get("mode", "x4") not in SUPPORTED_ENCODER_MODES:
             raise ValueError(f"encoders.{name}.mode must be one of {sorted(SUPPORTED_ENCODER_MODES)}")
 
+    for name, spec in config.get("i2c_buses", {}).items():
+        _require_mapping("i2c_buses", name, spec)
+        _require_int(spec, "bus", f"i2c_buses.{name}")
+        _require_number(spec, "frequency", f"i2c_buses.{name}", required=False)
+
+    for name, spec in config.get("dacs", {}).items():
+        _require_mapping("dacs", name, spec)
+        if not isinstance(spec.get("bus"), str):
+            raise ValueError(f"dacs.{name}.bus must name an i2c_buses entry")
+        _require_int(spec, "address", f"dacs.{name}")
+        channels = spec.get("channels", 1)
+        if not isinstance(channels, int) or channels < 1 or channels > 255:
+            raise ValueError(f"dacs.{name}.channels must be between 1 and 255")
+        resolution = spec.get("resolution_bits", 12)
+        if not isinstance(resolution, int) or resolution < 1 or resolution > 16:
+            raise ValueError(f"dacs.{name}.resolution_bits must be between 1 and 16")
+
 
 def _require_mapping(section: str, name: str, spec: object) -> None:
     if not isinstance(spec, dict):

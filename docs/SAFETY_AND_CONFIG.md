@@ -17,6 +17,8 @@ io.clear_emergency_stop()
 
 The heartbeat/watchdog path uses the same safe-output behavior. If heartbeats stop for the watchdog interval, firmware enters the safe state.
 
+Output commands rejected while emergency stop is active include digital writes, PWM writes, and DAC writes.
+
 This is not a replacement for a physical emergency stop circuit. Use it as a software layer in addition to hardwired power removal where people or expensive equipment are at risk.
 
 ## Full Configuration
@@ -74,6 +76,18 @@ encoders:
     pin_a: 5
     pin_b: 6
     mode: x4
+
+i2c_buses:
+  main_i2c:
+    bus: 0
+    frequency: 400000
+
+dacs:
+  analog_out:
+    bus: main_i2c
+    address: 96
+    channels: 1
+    resolution_bits: 12
 ```
 
 Supported digital pulls:
@@ -98,3 +112,5 @@ Supported encoder modes:
 - `x4`
 
 Analog values are returned as raw ADC values and normalized values from `0.0` to `1.0`. Scaling into volts, speed, angle, or any application meaning belongs in the application layer.
+
+External DAC outputs are configured as generic DAC channels over an I2C bus. The library writes raw DAC codes or normalized values; output voltage depends on the DAC hardware, reference, and supply voltage.

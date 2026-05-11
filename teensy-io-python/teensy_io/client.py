@@ -26,6 +26,8 @@ from .protocol.packet import Packet, PacketDecoder, encode_packet
 from .resources.analog import AnalogInput
 from .resources.counter import PulseCounter
 from .resources.encoder import QuadratureEncoder
+from .resources.dac import DacOutput
+from .resources.i2c import I2cBus
 from .resources.pin import Pin
 from .resources.pwm import PwmOutput
 from .transport.base import Transport
@@ -66,8 +68,11 @@ class TeensyIO:
         self._analogs: dict[str, AnalogInput] = {}
         self._counters: dict[str, PulseCounter] = {}
         self._encoders: dict[str, QuadratureEncoder] = {}
+        self._i2c_buses: dict[str, I2cBus] = {}
+        self._dacs: dict[str, DacOutput] = {}
         self._counter_ids: dict[str, int] = {}
         self._encoder_ids: dict[str, int] = {}
+        self._dac_ids: dict[str, int] = {}
         self._config: dict[str, Any] = {}
         self._telemetry_queue: "queue.Queue[TelemetryFrame]" = queue.Queue(maxsize=telemetry_max_frames)
         self._event_queue: "queue.Queue[EdgeEvent]" = queue.Queue(maxsize=event_max_frames)
@@ -167,6 +172,12 @@ class TeensyIO:
     def encoder(self, name: str) -> QuadratureEncoder:
         return self._encoders.setdefault(name, QuadratureEncoder(self, name))
 
+    def i2c_bus(self, name: str) -> I2cBus:
+        return self._i2c_buses.setdefault(name, I2cBus(self, name))
+
+    def dac(self, name: str) -> DacOutput:
+        return self._dacs.setdefault(name, DacOutput(self, name))
+
     def load_config(self, path: str | Path) -> None:
         self._config = load_config(path)
 
@@ -205,6 +216,17 @@ class TeensyIO:
 
         for name, spec in self._config.get("encoders", {}).items():
             self.encoder(name).attach(spec["pin_a"], spec["pin_b"], mode=spec.get("mode", "x4"))
+
+        for name, spec in self._config.get("i2c_buses", {}).items():
+            self.i2c_bus(name).configure(bus=int(spec.get("bus", 0)), frequency=int(spec.get("frequency", 400_000)))
+
+        for name, spec in self._config.get("dacs", {}).items():
+            self.dac(name).attach_i2c(
+                bus=spec["bus"],
+                address=int(spec["address"]),
+                channels=int(spec.get("channels", 1)),
+                resolution_bits=int(spec.get("resolution_bits", 12)),
+            )
 
     def begin_batch(self) -> None:
         with self._lock:
@@ -423,7 +445,14 @@ class TeensyIO:
             return ResourceKind.COUNTER, self._counters[name].id
         if name in self._encoders and self._encoders[name].id is not None:
             return ResourceKind.ENCODER, self._encoders[name].id
+        if name in self._dacs and self._dacs[name].id is not None:
+            return ResourceKind.DAC, self._dacs[name].id
         raise KeyError(f"unknown or unconfigured resource: {name}")
+
+    def _dac_id(self, name: str) -> int:
+        if name not in self._dac_ids:
+            self._dac_ids[name] = len(self._dac_ids)
+        return self._dac_ids[name]
 
     @staticmethod
     def _u8_duty(duty: float) -> int:

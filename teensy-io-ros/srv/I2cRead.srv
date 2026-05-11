@@ -1,0 +1,7 @@
+string bus
+uint8 address
+uint8 length
+---
+bool ok
+uint8[] data
+string error

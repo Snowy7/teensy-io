@@ -18,12 +18,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/AnalogRead.srv"
   "srv/EncoderRead.srv"
   "srv/EncoderReset.srv"
+  "srv/I2cWrite.srv"
+  "srv/I2cRead.srv"
+  "srv/DacWrite.srv"
   "srv/Subscribe.srv"
   "srv/EmergencyStop.srv"
   DEPENDENCIES builtin_interfaces
 )
 
-ament_python_install_package(teensy_io_ros)
+ament_python_install_package(teensy_io_ros_bridge)
 
 install(PROGRAMS
   scripts/teensy_io_bridge_node

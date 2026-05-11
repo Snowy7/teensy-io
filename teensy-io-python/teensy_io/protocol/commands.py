@@ -42,6 +42,13 @@ class CommandId(IntEnum):
     UNSUBSCRIBE = 0x61
     TELEMETRY_FRAME = 0x62
 
+    CONFIG_I2C_BUS = 0x70
+    I2C_WRITE = 0x71
+    I2C_READ = 0x72
+    CONFIG_DAC = 0x73
+    DAC_WRITE_RAW = 0x74
+    DAC_WRITE_NORMALIZED = 0x75
+
     EMERGENCY_STOP = 0xF0
     CLEAR_EMERGENCY_STOP = 0xF1
 
@@ -61,3 +68,4 @@ class ResourceKind(IntEnum):
     ANALOG = 2
     COUNTER = 3
     ENCODER = 4
+    DAC = 5

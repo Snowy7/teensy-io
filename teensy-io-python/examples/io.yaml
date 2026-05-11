@@ -36,3 +36,15 @@ encoders:
     pin_a: 5
     pin_b: 6
     mode: x4
+
+i2c_buses:
+  main_i2c:
+    bus: 0
+    frequency: 400000
+
+dacs:
+  analog_output:
+    bus: main_i2c
+    address: 96
+    channels: 1
+    resolution_bits: 12

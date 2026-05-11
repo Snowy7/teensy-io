@@ -7,6 +7,8 @@ The library intentionally exposes hardware primitives only:
 - Digital input and output
 - PWM output
 - Analog input
+- I2C bus access
+- External DAC output
 - Pulse counters
 - Quadrature encoders
 - Batch writes
@@ -39,6 +41,8 @@ This scaffold implements the first reliable slice:
 - Digital input configure/read
 - PWM configure/write/disable
 - Analog configure/read
+- I2C bus configure/read/write
+- External I2C DAC configure/write
 - Pulse counter configure/read/reset/frequency
 - Quadrature encoder configure/read/reset
 - Telemetry and edge event subscription frames
@@ -103,6 +107,9 @@ It exposes typed services including:
 - `teensy_io/counter_read`
 - `teensy_io/analog_read`
 - `teensy_io/encoder_read`
+- `teensy_io/i2c_write`
+- `teensy_io/i2c_read`
+- `teensy_io/dac_write`
 - `teensy_io/subscribe`
 - `teensy_io/emergency_stop`
 

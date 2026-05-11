@@ -234,6 +234,60 @@ def test_encoder_requires_attach_and_valid_mode() -> None:
         io.encoder("steering").read()
 
 
+def test_i2c_bus_configure_write_and_read_payloads() -> None:
+    transport = ScriptedTransport()
+    io = TeensyIO(transport=transport).connect()
+
+    bus = io.i2c_bus("main").configure(bus=0, frequency=400_000)
+    bus.write(0x60, b"\x01\x02")
+
+    assert bus.read(0x60, 3) == b"\x00\x01\x02"
+    assert [(request.payload[0], command_payload(request)) for request in transport.requests] == [
+        (CommandId.CONFIG_I2C_BUS, b"\x00\x80\x1a\x06\x00"),
+        (CommandId.I2C_WRITE, b"\x00\x60\x02\x01\x02"),
+        (CommandId.I2C_READ, b"\x00\x60\x03"),
+    ]
+
+
+def test_i2c_requires_config_and_valid_address() -> None:
+    io = TeensyIO(transport=ScriptedTransport()).connect()
+
+    with pytest.raises(RuntimeError):
+        io.i2c_bus("main").write(0x60, b"")
+    with pytest.raises(ValueError):
+        io.i2c_bus("main").configure(bus=0).write(0x80, b"")
+
+
+def test_dac_attach_and_write_payloads() -> None:
+    transport = ScriptedTransport()
+    io = TeensyIO(transport=transport).connect()
+
+    io.i2c_bus("main").configure(bus=0, frequency=400_000)
+    dac = io.dac("analog_out").attach_i2c(bus="main", address=0x60, channels=1, resolution_bits=12)
+    dac.write_raw(2048)
+    dac.write_normalized(0.5)
+
+    assert [(request.payload[0], command_payload(request)) for request in transport.requests] == [
+        (CommandId.CONFIG_I2C_BUS, b"\x00\x80\x1a\x06\x00"),
+        (CommandId.CONFIG_DAC, b"\x00\x00\x60\x01\x0c"),
+        (CommandId.DAC_WRITE_RAW, b"\x00\x00\x00\x08"),
+        (CommandId.DAC_WRITE_NORMALIZED, b"\x00\x00\x88\x13"),
+    ]
+
+
+def test_dac_requires_configured_bus_and_valid_values() -> None:
+    io = TeensyIO(transport=ScriptedTransport()).connect()
+
+    with pytest.raises(RuntimeError):
+        io.dac("analog_out").attach_i2c(bus="missing", address=0x60)
+    io.i2c_bus("main").configure(bus=0)
+    dac = io.dac("analog_out").attach_i2c(bus="main", address=0x60, resolution_bits=12)
+    with pytest.raises(ValueError):
+        dac.write_raw(4096)
+    with pytest.raises(ValueError):
+        dac.write_normalized(1.1)
+
+
 def test_subscribe_unsubscribe_and_edge_callback() -> None:
     transport = ScriptedTransport()
     io = TeensyIO(transport=transport).connect()

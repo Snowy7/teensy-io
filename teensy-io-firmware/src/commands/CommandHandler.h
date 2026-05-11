@@ -11,6 +11,7 @@ enum class ResourceKind : uint8_t {
   Analog = 2,
   Counter = 3,
   Encoder = 4,
+  Dac = 5,
 };
 
 struct EncoderSlot {
@@ -33,6 +34,15 @@ struct SubscriptionSlot {
   bool has_last_value = false;
 };
 
+struct DacSlot {
+  bool active = false;
+  uint8_t bus = 0;
+  uint8_t address = 0;
+  uint8_t channels = 1;
+  uint8_t resolution_bits = 12;
+  uint16_t last_value = 0;
+};
+
 class CommandHandler {
  public:
   explicit CommandHandler(PacketWriter& writer) : writer_(writer) {}
@@ -52,8 +62,10 @@ class CommandHandler {
   void handle_counter(CommandId command, const Packet& packet);
   void handle_encoder(CommandId command, const Packet& packet);
   void handle_subscription(CommandId command, const Packet& packet);
+  void handle_i2c(CommandId command, const Packet& packet);
   bool configure_counter(uint8_t id, uint8_t pin, EdgeMode edge);
   bool configure_encoder(uint8_t id, uint8_t pin_a, uint8_t pin_b, uint8_t mode);
+  bool write_dac_raw(uint8_t id, uint8_t channel, uint16_t value);
   int32_t read_resource_value(ResourceKind kind, uint8_t id, bool& ok);
   void update_subscriptions();
   void write_i32(uint8_t* payload, int32_t value);
@@ -65,6 +77,8 @@ class CommandHandler {
   bool analog_configured_[NUM_DIGITAL_PINS] = {};
   uint8_t analog_samples_[NUM_DIGITAL_PINS] = {};
   SubscriptionSlot subscriptions_[kMaxSubscriptions] = {};
+  bool i2c_configured_[kMaxI2cBuses] = {};
+  DacSlot dacs_[kMaxDacs] = {};
 };
 
 extern CounterSlot g_counters[kMaxCounters];

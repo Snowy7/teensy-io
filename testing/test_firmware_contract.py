@@ -56,6 +56,12 @@ def test_command_id_values_match_firmware() -> None:
         "Subscribe": CommandId.SUBSCRIBE,
         "Unsubscribe": CommandId.UNSUBSCRIBE,
         "TelemetryFrame": CommandId.TELEMETRY_FRAME,
+        "ConfigI2cBus": CommandId.CONFIG_I2C_BUS,
+        "I2cWrite": CommandId.I2C_WRITE,
+        "I2cRead": CommandId.I2C_READ,
+        "ConfigDac": CommandId.CONFIG_DAC,
+        "DacWriteRaw": CommandId.DAC_WRITE_RAW,
+        "DacWriteNormalized": CommandId.DAC_WRITE_NORMALIZED,
         "EmergencyStop": CommandId.EMERGENCY_STOP,
         "ClearEmergencyStop": CommandId.CLEAR_EMERGENCY_STOP,
     }

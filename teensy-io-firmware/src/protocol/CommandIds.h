@@ -45,6 +45,13 @@ enum class CommandId : uint8_t {
   Unsubscribe = 0x61,
   TelemetryFrame = 0x62,
 
+  ConfigI2cBus = 0x70,
+  I2cWrite = 0x71,
+  I2cRead = 0x72,
+  ConfigDac = 0x73,
+  DacWriteRaw = 0x74,
+  DacWriteNormalized = 0x75,
+
   EmergencyStop = 0xF0,
   ClearEmergencyStop = 0xF1,
 };

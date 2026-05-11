@@ -1,0 +1,8 @@
+string name
+uint8 channel
+uint16 raw
+float64 normalized
+bool use_normalized
+---
+bool ok
+string error

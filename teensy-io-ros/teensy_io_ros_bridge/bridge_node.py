@@ -23,7 +23,10 @@ class TeensyIORosBridge:
             EmergencyStop,
             EncoderRead,
             EncoderReset,
+            I2cRead,
+            I2cWrite,
             PwmWrite,
+            DacWrite,
             Subscribe,
         )
 
@@ -43,6 +46,9 @@ class TeensyIORosBridge:
         self._service(AnalogRead, "teensy_io/analog_read", self._analog_read)
         self._service(EncoderRead, "teensy_io/encoder_read", self._encoder_read)
         self._service(EncoderReset, "teensy_io/encoder_reset", self._encoder_reset)
+        self._service(I2cWrite, "teensy_io/i2c_write", self._i2c_write)
+        self._service(I2cRead, "teensy_io/i2c_read", self._i2c_read)
+        self._service(DacWrite, "teensy_io/dac_write", self._dac_write)
         self._service(Subscribe, "teensy_io/subscribe", self._subscribe)
         self._service(EmergencyStop, "teensy_io/emergency_stop", self._emergency_stop)
 
@@ -136,6 +142,31 @@ class TeensyIORosBridge:
     def _encoder_reset(self, request: Any, response: Any) -> Any:
         try:
             self.io.encoder(request.name).reset()
+            return self._ok(response)
+        except Exception as exc:
+            return self._fail(response, exc)
+
+    def _i2c_write(self, request: Any, response: Any) -> Any:
+        try:
+            self.io.i2c_bus(request.bus).write(request.address, bytes(request.data))
+            return self._ok(response)
+        except Exception as exc:
+            return self._fail(response, exc)
+
+    def _i2c_read(self, request: Any, response: Any) -> Any:
+        try:
+            response.data = list(self.io.i2c_bus(request.bus).read(request.address, request.length))
+            return self._ok(response)
+        except Exception as exc:
+            return self._fail(response, exc)
+
+    def _dac_write(self, request: Any, response: Any) -> Any:
+        try:
+            dac = self.io.dac(request.name)
+            if request.use_normalized:
+                dac.write_normalized(request.normalized, channel=request.channel)
+            else:
+                dac.write_raw(request.raw, channel=request.channel)
             return self._ok(response)
         except Exception as exc:
             return self._fail(response, exc)
